@@ -183,3 +183,8 @@ Android 单测恢复到 `463 tests, 0 failed, 2 skipped`：补了 `VerifierTest`
 
 仍未做：Activity 重建后自动恢复未回答的 question、完整 chat transcript、
 mission 队列/定时、带确定性 postcondition 的 imported candidate 跑 mission。
+
+补记：这一轮同时接上了 token accounting。`DeepSeekClient` 累计 provider
+`usage.total_tokens`（没有则 prompt+completion），`AgentRunner` 在
+`finishRun` 时 drain 到 `runs.ai_cost`，Runs 页显示 `cost=<n>tok`；新增
+`DeepSeekUsageTest` 覆盖两种 usage 形状。Android 单测变为 466。

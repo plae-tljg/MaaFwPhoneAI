@@ -80,6 +80,7 @@ class AgentRunner(
         cancelRequested = false
         synchronized(answerLock) { answerDeferred = null }
         _pendingQuestion.value = null
+        deepseek.drainUsageTokens()
         if (!configured()) {
             return BrainRunner.GoalResult("no_key", "No DeepSeek API key configured.")
         }
@@ -715,6 +716,7 @@ class AgentRunner(
             verified = success && authoredProposalId == null,
             verifyJson = verifyJson,
             stateOverride = if (cancelRequested) "cancelled" else null,
+            aiCost = deepseek.drainUsageTokens(),
         )
         val proposalId = if (success && authoredProposalId == null) {
             Learner.propose(

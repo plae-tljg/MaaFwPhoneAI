@@ -8,6 +8,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /** DeepSeek chat client for the AI fallback loop (native tool calling). */
 class DeepSeekClient(private val db: BrainDb) {
@@ -17,6 +18,11 @@ class DeepSeekClient(private val db: BrainDb) {
         .readTimeout(240, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .build()
+
+    /** Token usage of every provider call since the last [drainUsageTokens]. */
+    private val usageCounter = AtomicInteger(0)
+
+    fun drainUsageTokens(): Int = usageCounter.getAndSet(0)
 
     fun apiKey(): String = db.setting("deepseek_api_key", BuildConfig.DEEPSEEK_API_KEY)
     fun model(): String = db.setting("deepseek_model", BuildConfig.DEEPSEEK_MODEL)
@@ -42,7 +48,9 @@ class DeepSeekClient(private val db: BrainDb) {
             if (!response.isSuccessful) {
                 throw IllegalStateException("DeepSeek HTTP ${response.code}: ${body.take(300)}")
             }
-            return JSONObject(body)
+            val data = JSONObject(body)
+            usageCounter.addAndGet(usageTokensOf(data))
+            return data
         }
     }
 
@@ -398,4 +406,16 @@ class DeepSeekClient(private val db: BrainDb) {
             )
         return JSONArray(listOf(tool))
     }
+}
+
+/**
+ * Provider usage is normally `{"usage":{"total_tokens":...}}`; some
+ * OpenAI-compatible gateways split prompt/completion only.
+ */
+internal fun usageTokensOf(data: JSONObject): Int {
+    val usage = data.optJSONObject("usage") ?: return 0
+    if (usage.has("total_tokens")) return usage.optInt("total_tokens", 0).coerceAtLeast(0)
+    val prompt = usage.optInt("prompt_tokens", 0)
+    val completion = usage.optInt("completion_tokens", 0)
+    return (prompt + completion).coerceAtLeast(0)
 }

@@ -228,14 +228,14 @@ class BrainDb(context: Context) : SQLiteOpenHelper(context.applicationContext, D
 
     fun finishRun(runId: Long, success: Boolean, error: String = "", durationMs: Long = 0,
                   verified: Boolean? = null, verifyJson: String = "{}",
-                  stateOverride: String? = null) {
+                  stateOverride: String? = null, aiCost: Int = 0) {
         val state = stateOverride ?: if (success) "done" else "failed"
         exec(
-            "UPDATE runs SET success=?, error=?, duration_ms=?, state=?, verified=?, verify_json=?, " +
+            "UPDATE runs SET success=?, error=?, duration_ms=?, state=?, ai_cost=?, verified=?, verify_json=?, " +
                 "finished_at=datetime('now') WHERE id=?",
             arrayOf<Any?>(
                 if (success) 1 else 0, error, durationMs,
-                state,
+                state, aiCost.coerceAtLeast(0),
                 if (verified == true) 1 else 0, verifyJson, runId,
             ),
         )

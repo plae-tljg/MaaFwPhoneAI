@@ -201,7 +201,7 @@ private fun AssistantApp(
             val missionId = selectedMissionId
             val loaded = withContext(Dispatchers.IO) {
                 listOf(
-                    db.rows("SELECT id,goal,state,success,verified,error,duration_ms FROM runs ORDER BY id DESC LIMIT 30"),
+                    db.rows("SELECT id,goal,state,success,verified,ai_cost,error,duration_ms FROM runs ORDER BY id DESC LIMIT 30"),
                     db.rows(
                         "SELECT p.id,p.kind,p.status,p.source_run_id,p.target_pipeline_id,p.target_version_id," +
                             "p.candidate_json," +
@@ -595,7 +595,8 @@ private fun RunsTab(runs: List<JSONObject>) {
                     Text(
                         "#${run.optLong("id")} · ${run.optString("state")} · " +
                             (if (run.optInt("success") == 1) "ok" else "failed") +
-                            " · verified=${run.optInt("verified") == 1} · ${run.optLong("duration_ms")}ms",
+                            " · verified=${run.optInt("verified") == 1}" +
+                            " · cost=${run.optLong("ai_cost")}tok · ${run.optLong("duration_ms")}ms",
                         fontWeight = FontWeight.Bold,
                     )
                     Text(run.optString("goal"), style = MaterialTheme.typography.bodyMedium)

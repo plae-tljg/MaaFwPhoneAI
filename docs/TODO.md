@@ -84,7 +84,7 @@ graphs in place. The previous `maa-phone-v1-debug.apk` hash is obsolete.
 - **Review evidence inspector**: Review cards now show goal, entry, node
   count/first nodes, postcondition, and linked replay runs
   `id:role:success:verified` before Approve/Reject.
-- **Android unit tests are green**: `463 tests`, `0 failed`, `2 skipped`.
+- **Android unit tests are green**: `466 tests`, `0 failed`, `2 skipped`.
   This also fixes the stale `FakePrivilegedService` (missing new AIDL
   `recognitionDirect`) and routes Assistant buttons through `MaaButton` /
   `MaaOutlinedButton`.
@@ -95,6 +95,9 @@ graphs in place. The previous `maa-phone-v1-debug.apk` hash is obsolete.
   a free-text field, then resumes the same run when the user answers.
   Device-rendered and cancel-tested; the temporary debug hook used to open the
   modal without an AI key was removed afterwards.
+- **Android token accounting**: `DeepSeekClient` accumulates provider
+  `usage.total_tokens` (or prompt+completion fallback); `AgentRunner` drains it
+  into `runs.ai_cost` at finish, and the Runs tab shows `cost=<n>tok`.
 - **Mission UI + runner**: new Assistant **Missions** tab creates/deletes
   missions, pins live pipelines or adds goal items, enables/disables items,
   runs an item through `BrainRunner.runMissionItem`, and shows the latest run
@@ -120,7 +123,7 @@ graphs in place. The previous `maa-phone-v1-debug.apk` hash is obsolete.
 | P1-1 | AI can read tables and debug | Maintenance AI reads `runs`, `pipeline_versions`, `pipeline_version_runs`, `messages`, `proposals`; proposes `pipeline_fix`/`element_fix` with evidence. | tables/CLI exist; AI-facing query tool/loop not done |
 | P1-2 | First-time toggle robustness | Use focused crop before/after toggle; handle already-active state; record state evidence. | pre-tap check and retry implemented; more validation needed |
 | P1-3 | Wait/stabilize semantics | Use M9A-style `pre/post_wait_freezes` / explicit recognition instead of blind waits. | prompt-level waits only; not in pipeline execution yet |
-| P1-4 | Android token accounting | Parse provider usage into `runs.ai_cost`; show cost in Runs. | not done |
+| P1-4 | Android token accounting | Parse provider usage into `runs.ai_cost`; show cost in Runs. | ✅ done: `usage.total_tokens` (or prompt+completion) drains into `runs.ai_cost`; Runs shows `cost=<n>tok` |
 | P1-5 | Search-field recovery polish | Auto-recovery currently types query on repeated field taps; make it logged/visible and test with several apps. | implemented, needs test |
 | P1-6 | Register apps/hints for finance and other test targets | Add `<queries><intent MAIN/LAUNCHER>` so the catalog sees all launchable apps; verify `com.anonymous.financemanager` and other user apps. | ✅ done (run #12); keep aliases/hints updated as needed |
 | P1-8 | Chat-like agent IO with approve/ask | A ChatGPT/Codex/opencode-like thread/modal: assistant can show a plan or question, offer option buttons (Yes/No/Apply/Cancel) plus a free-text field, let the user answer, and continue the run from `needs_input`. | ✅ `ask` tool + `needs_input` state + option/free-text modal + continuation implemented (device-rendered modal; cancel path tested). A persistent chat transcript view can still be improved later. |

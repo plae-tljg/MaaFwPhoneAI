@@ -271,8 +271,9 @@ Known first checks:
   `messages`/`runs.state='needs_input'`, but if the Assistant Activity is
   destroyed the modal does not automatically re-bind on relaunch yet; add a
   startup recovery path that reads unresolved question rows.
-- **No token accounting**: Android `runs.ai_cost` is currently 0; cost
-  evidence comes from the PC prototype.
+- **Token accounting depends on provider usage**: `AgentRunner` writes
+  `runs.ai_cost` from `usage.total_tokens` (or prompt+completion) and the Runs
+  tab shows it; gateways that omit `usage` still record 0.
 - **Native import path not yet exercised end-to-end**: importer/pass-through
   compile, but no real MaaMCP pipeline has been imported and replayed
   verified yet.
