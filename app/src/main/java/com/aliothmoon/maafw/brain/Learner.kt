@@ -18,6 +18,8 @@ object Learner {
         targetPipelineId: Long? = null,
         evidenceRunId: Long? = null,
         postcondition: JSONObject = JSONObject(),
+        /** false keeps an unverified AI trajectory Review-visible instead of dropping it. */
+        visionVerified: Boolean = true,
     ): Long? {
         val steps = JSONArray()
         val elements = JSONObject()
@@ -100,7 +102,10 @@ object Learner {
             postconditionJson = postcondition.toString(),
             source = "bootstrap",
             sourceRunId = runId,
-            evidenceJson = JSONObject().put("vision_verified", true).toString(),
+            evidenceJson = JSONObject()
+                .put("vision_verified", visionVerified)
+                .put("proposed_from_failed_verification", !visionVerified)
+                .toString(),
         )
         if (evidenceRunId != null) {
             db.linkVersionRun(versionId, evidenceRunId, "evidence")
@@ -123,12 +128,13 @@ object Learner {
             targetPipelineId = pipelineId,
             targetVersionId = versionId,
         )
+        val verificationLabel = if (visionVerified) "vision-verified" else "unverified trajectory, Test replay required"
         val card = if (proposalKind == "pipeline_fix") {
             "Update existing pipeline? proposal #$proposalId (${steps.length()} steps, " +
-                "${elements.length()} template pattern(s), replay evidence)"
+                "${elements.length()} template pattern(s), $verificationLabel)"
         } else {
             "Save as pipeline? proposal #$proposalId (${steps.length()} steps, " +
-                "${elements.length()} template pattern(s), vision-verified)"
+                "${elements.length()} template pattern(s), $verificationLabel)"
         }
         db.addMessage(
             runId, "assistant", "card", card,

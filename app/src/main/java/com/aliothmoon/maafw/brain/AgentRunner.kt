@@ -145,6 +145,7 @@ class AgentRunner(
         var lastFinalShot: String? = null
         var authoredProposalId: Long? = null
         var success = false
+        var verificationFailed = false
         var error = ""
         var steps = resumeStep
         val configuredMaxSteps = db.setting("agent_max_steps", "300")
@@ -186,6 +187,7 @@ class AgentRunner(
 
         for (step in resumeStep until configuredMaxSteps) {
             steps = step + 1
+            val stepStartedAt = System.currentTimeMillis()
             if (cancelRequested) {
                 error = "cancelled by user"
                 break
@@ -203,18 +205,29 @@ class AgentRunner(
             val frameKey = ImageTools.frameKey(shot.absolutePath)
             if (frameKey != lastObservedFrame) {
                 lastObservedFrame = frameKey
-                lastObservation = runCatching { deepseek.observeScreen(shot.absolutePath) }.getOrNull()
-                lastObservation?.optString("screen")?.take(240)?.takeIf { it.isNotBlank() }?.let { summary ->
-                    db.addMessage(runId, "assistant", "status", "screen: $summary")
-                }
+                // Reuse the frame captured at the top of this step. The old
+                // path ran a second MaaFW Screencap task per observation.
                 lastRecognitionObservation = runCatching {
-                    tools.recognition("OCR", "{}")?.toString().orEmpty()
+                    tools.recognition("OCR", "{}", freshFrame = false)?.toString().orEmpty()
                 }.getOrNull().orEmpty()
                 if (lastRecognitionObservation.isNotBlank()) {
                     db.addMessage(
                         runId, "assistant", "status",
                         "native OCR recognition: ${lastRecognitionObservation.length} chars",
                     )
+                }
+                // A second vision-model screen observer is useful on blank or
+                // non-textual screens, but on a normal OCR-rich screen it just
+                // adds a whole extra model request per step. Keep it for the
+                // cases where the planner would otherwise be blind.
+                val ocrLooksUseful = recognitionHasText(lastRecognitionObservation)
+                if (!ocrLooksUseful) {
+                    lastObservation = runCatching { deepseek.observeScreen(shot.absolutePath) }.getOrNull()
+                    lastObservation?.optString("screen")?.take(240)?.takeIf { it.isNotBlank() }?.let { summary ->
+                        db.addMessage(runId, "assistant", "status", "screen: $summary")
+                    }
+                } else {
+                    lastObservation = null
                 }
             }
             val runtimeGuidance = buildString {
@@ -264,7 +277,7 @@ class AgentRunner(
                     error = "early exit: model returned no usable action $noProgressStreak time(s) ($detail)"
                     break
                 }
-                delay(1000)
+                delay(500)
                 continue
             }
             if (action.optString("action") == "key" &&
@@ -584,7 +597,7 @@ class AgentRunner(
             }
             if (error.startsWith("repeat loop")) break
             if (autoRecovered) {
-                delay(1200)
+                delay(600)
                 continue
             }
             val entry = JSONObject().put("action", if (kind == "locate") "tap" else kind).put("result", result)
@@ -620,7 +633,8 @@ class AgentRunner(
             history.add("${action.optString("action")} -> $result")
             val thought = action.optString("thought").take(300)
             val statusText = "AI step: ${action.optString("action")} -> $result" +
-                if (thought.isBlank()) "" else " | thought: $thought"
+                if (thought.isBlank()) "" else " | thought: $thought" +
+                " (${System.currentTimeMillis() - stepStartedAt}ms)"
             db.addMessage(runId, "assistant", "status", statusText)
             if (!success) {
                 if (noProgressStreak >= earlyExitLimit) {
@@ -634,7 +648,7 @@ class AgentRunner(
                     break
                 }
             }
-            delay(1200)
+            delay(250)
             if (success) break
         }
 
@@ -690,6 +704,7 @@ class AgentRunner(
             }
             if (!verified) {
                 success = false
+                verificationFailed = true
                 error = "vision verify failed after retries: $verifyReason"
             }
         }
@@ -744,25 +759,47 @@ class AgentRunner(
             stateOverride = if (cancelRequested) "cancelled" else null,
             aiCost = deepseek.drainUsageTokens(),
         )
-        val proposalId = if (success && authoredProposalId == null) {
-            Learner.propose(
-                db = db,
-                context = context,
-                runId = runId,
-                goal = goal,
-                appId = appId,
-                trajectory = trajectory,
-                proposalKind = proposalKind,
-                targetPipelineId = targetPipelineId,
-                evidenceRunId = evidenceRunId,
-                postcondition = learnerPostcondition,
-            )
+        val actionableSteps = trajectory.count {
+            it.optString("action") in setOf("launch", "tap", "text", "key", "swipe", "wait")
+        }
+        val shouldPropose = authoredProposalId == null &&
+            (success || verificationFailed) &&
+            actionableSteps > 0
+        val proposalId = if (shouldPropose) {
+            runCatching {
+                Learner.propose(
+                    db = db,
+                    context = context,
+                    runId = runId,
+                    goal = goal,
+                    appId = appId,
+                    trajectory = trajectory,
+                    proposalKind = proposalKind,
+                    targetPipelineId = targetPipelineId,
+                    evidenceRunId = evidenceRunId,
+                    postcondition = learnerPostcondition,
+                    visionVerified = success,
+                )
+            }.onFailure { failure ->
+                db.addMessage(
+                    runId, "assistant", "status",
+                    "could not consolidate trajectory into a proposal: ${failure.message ?: failure.javaClass.simpleName}",
+                )
+            }.getOrNull()
         } else {
             null
+        }
+        if (authoredProposalId == null && proposalId == null && actionableSteps == 0 && success) {
+            db.addMessage(
+                runId, "assistant", "status",
+                "run had no actionable launch/tap/text/key/swipe/wait steps to consolidate into a pipeline",
+            )
         }
         val message = when {
             authoredProposalId != null ->
                 "AI authored native graph proposal #$authoredProposalId; test replay and Review before approval"
+            verificationFailed && proposalId != null ->
+                "AI run was not independently verified, but candidate proposal #$proposalId is ready for Review/Test replay"
             success -> if (proposalKind == "pipeline_fix") {
                 "AI adapted '$goal' in $steps step(s); pipeline fix proposal #$proposalId ready to review"
             } else {
@@ -770,7 +807,7 @@ class AgentRunner(
             }
             else -> "AI fallback failed: ${error.ifBlank { "unknown error" }}"
         }
-        db.addMessage(runId, "assistant", if (success) "result" else "result", message)
+        db.addMessage(runId, "assistant", "result", message)
         return BrainRunner.GoalResult(
             if (authoredProposalId != null) "proposed" else if (success) "done" else "failed",
             message,
@@ -855,6 +892,16 @@ class AgentRunner(
             arrayOf<Any?>(runId),
         ).forEach { db.updateMessageState(it.getLong("id"), "dismissed") }
         db.addMessage(runId, "assistant", "result", "Cancelled: user dismissed the recovered question")
+    }
+
+    /** Native OCR JSON can be 185 chars of empty `all`; only a real hit counts. */
+    private fun recognitionHasText(raw: String): Boolean {
+        if (raw.isBlank()) return false
+        val recognition = runCatching { JSONObject(raw) }.getOrNull() ?: return false
+        if (!recognition.optBoolean("hit")) return false
+        val detail = runCatching { JSONObject(recognition.optString("detail")) }.getOrNull() ?: return false
+        val all = detail.optJSONArray("all") ?: return false
+        return all.length() > 0
     }
 
     private fun extractSearchQuery(goal: String): String? {

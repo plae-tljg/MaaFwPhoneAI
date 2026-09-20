@@ -296,6 +296,7 @@ private fun AssistantApp(
     var missionQueue by remember { mutableStateOf(emptyList<JSONObject>()) }
     var livePipelines by remember { mutableStateOf(emptyList<JSONObject>()) }
     var selectedMissionId by remember { mutableLongStateOf(0L) }
+    var chatRunId by remember { mutableLongStateOf(0L) }
     var recoveredQuestion by remember { mutableStateOf<JSONObject?>(null) }
     var dataTable by remember { mutableStateOf("runs") }
     var tableRows by remember { mutableStateOf(emptyList<JSONObject>()) }
@@ -332,9 +333,26 @@ private fun AssistantApp(
     fun refresh() {
         scope.launch {
             val missionId = selectedMissionId
+            val requestedChatRunId = chatRunId
             val loaded = withContext(Dispatchers.IO) {
+                val runRows = db.rows(
+                    "SELECT id,goal,state,success,verified,ai_cost,error,duration_ms " +
+                        "FROM runs ORDER BY id DESC LIMIT 30",
+                )
+                val effectiveChatRunId = requestedChatRunId.takeIf { it > 0 }
+                    ?: runRows.firstOrNull()?.getLong("id")
+                    ?: 0L
+                val messageRows = if (effectiveChatRunId > 0) {
+                    db.rows(
+                        "SELECT id,run_id,role,kind,content,state,payload_json " +
+                            "FROM messages WHERE run_id=? ORDER BY id ASC LIMIT 200",
+                        arrayOf<Any?>(effectiveChatRunId),
+                    )
+                } else {
+                    emptyList()
+                }
                 listOf<Any?>(
-                    db.rows("SELECT id,goal,state,success,verified,ai_cost,error,duration_ms FROM runs ORDER BY id DESC LIMIT 30"),
+                    runRows,
                     db.rows(
                         "SELECT p.id,p.kind,p.status,p.source_run_id,p.target_pipeline_id,p.target_version_id," +
                             "p.candidate_json," +
@@ -343,25 +361,24 @@ private fun AssistantApp(
                             " WHERE pvr.pipeline_version_id=p.target_version_id) evidence " +
                             "FROM proposals p ORDER BY p.id DESC LIMIT 30",
                     ),
-                    db.rows(
-                        "SELECT id,run_id,role,kind,content,state,payload_json " +
-                            "FROM messages ORDER BY id DESC LIMIT 80",
-                    ),
+                    messageRows,
                     db.missions(),
                     db.rows("SELECT id,name,goal FROM pipelines WHERE status='live' ORDER BY name"),
                     if (missionId > 0) db.missionItems(missionId) else emptyList(),
                     db.latestPendingQuestion(),
                     if (missionId > 0) db.missionQueue(missionId) else emptyList(),
+                    effectiveChatRunId,
                 )
             }
             runs = loaded[0] as List<JSONObject>
             proposals = loaded[1] as List<JSONObject>
-            messages = (loaded[2] as List<JSONObject>).reversed()
+            messages = loaded[2] as List<JSONObject>
             missions = loaded[3] as List<JSONObject>
             livePipelines = loaded[4] as List<JSONObject>
             missionItems = loaded[5] as List<JSONObject>
             recoveredQuestion = loaded[6] as JSONObject?
             missionQueue = loaded[7] as List<JSONObject>
+            chatRunId = loaded[8] as Long
             val base = context.getExternalFilesDir("brain")
             val shots = if (base != null) File(base, "shots") else null
             latestShot = shots?.listFiles()?.filter { it.name.endsWith(".png") }
@@ -503,7 +520,12 @@ private fun AssistantApp(
                     onImport = { importLauncher.launch("application/json") },
                     onStatus = { status = it; tick++ },
                 )
-                AssistantTab.LOGS -> LogsTab(messages)
+                AssistantTab.LOGS -> ChatTab(
+                    runs = runs,
+                    messages = messages,
+                    selectedRunId = chatRunId,
+                    onSelectRun = { runId -> chatRunId = runId; tick++ },
+                )
                 AssistantTab.RUNS -> RunsTab(runs)
                 AssistantTab.MISSIONS -> MissionsTab(
                     db = db,
@@ -781,14 +803,55 @@ private fun AssistantTabContent(
 }
 
 @Composable
-private fun LogsTab(messages: List<JSONObject>) {
+private fun ChatTab(
+    runs: List<JSONObject>,
+    messages: List<JSONObject>,
+    selectedRunId: Long,
+    onSelectRun: (Long) -> Unit,
+) {
+    val selectedRun = runs.firstOrNull { it.optLong("id") == selectedRunId }
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            runs.take(12).forEach { run ->
+                val id = run.optLong("id")
+                if (id == selectedRunId) {
+                    MaaButton(onClick = { onSelectRun(id) }) { Text("#$id", maxLines = 1) }
+                } else {
+                    MaaOutlinedButton(onClick = { onSelectRun(id) }) { Text("#$id", maxLines = 1) }
+                }
+            }
+        }
+        selectedRun?.let { run ->
+            Text(
+                "Run #${run.optLong("id")} · ${run.optString("state")} · ${run.optString("goal")}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp),
+                maxLines = 2,
+            )
+        }
+        LogsTab(messages, Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun LogsTab(
+    messages: List<JSONObject>,
+    modifier: Modifier = Modifier.fillMaxSize(),
+) {
     val listState = rememberLazyListState()
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
     }
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize().padding(10.dp),
+        modifier = modifier.padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         items(messages) { message -> ChatMessage(message) }
@@ -1366,6 +1429,12 @@ private fun SettingsTab(db: BrainDb, deepseek: DeepSeekClient, onStatus: (String
             onValueChange = { model = it },
             label = { Text("Model") },
             modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            "Official api.deepseek.com uses deepseek-chat or deepseek-reasoner. " +
+                "A custom OpenAI-compatible gateway can keep deepseek-v4-flash.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         OutlinedTextField(
             value = maxSteps,

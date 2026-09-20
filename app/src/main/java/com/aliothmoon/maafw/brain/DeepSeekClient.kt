@@ -25,8 +25,20 @@ class DeepSeekClient(private val db: BrainDb) {
     fun drainUsageTokens(): Int = usageCounter.getAndSet(0)
 
     fun apiKey(): String = db.setting("deepseek_api_key", BuildConfig.DEEPSEEK_API_KEY)
-    fun model(): String = db.setting("deepseek_model", BuildConfig.DEEPSEEK_MODEL)
     fun baseUrl(): String = db.setting("deepseek_base", BuildConfig.DEEPSEEK_BASE).trimEnd('/')
+
+    /**
+     * Official DeepSeek uses `deepseek-chat` / `deepseek-reasoner`; the
+     * `deepseek-v4-flash` default is for the custom OpenAI-compatible gateway
+     * this project was built around. Keep an explicit user setting first.
+     */
+    fun model(): String {
+        val configured = db.setting("deepseek_model", "").trim()
+        if (configured.isNotBlank()) return configured
+        val base = baseUrl()
+        if (base.contains("api.deepseek.com")) return "deepseek-chat"
+        return BuildConfig.DEEPSEEK_MODEL.ifBlank { "deepseek-v4-flash" }
+    }
     fun configured(): Boolean = apiKey().isNotBlank()
 
     fun chat(messages: JSONArray, maxTokens: Int = 4000, jsonMode: Boolean = false,
@@ -157,7 +169,7 @@ class DeepSeekClient(private val db: BrainDb) {
         val messages = JSONArray()
             .put(JSONObject().put("role", "system").put("content", system))
             .put(JSONObject().put("role", "user").put("content", content))
-        val data = chat(messages, maxTokens = 6000, tools = tools())
+        val data = chat(messages, maxTokens = 1500, tools = tools())
         var result = actionFrom(data)
         if (result == null) {
             // Retry once: reasoning models occasionally answer with empty content
@@ -171,7 +183,7 @@ class DeepSeekClient(private val db: BrainDb) {
                         "object like {\"action\":\"tap\",\"point\":[x,y],\"thought\":\"...\"}.",
                 )
             )
-            result = runCatching { chat(repair, maxTokens = 6000, jsonMode = true) }
+            result = runCatching { chat(repair, maxTokens = 1500, jsonMode = true) }
                 .getOrNull()?.let { actionFrom(it) }
         }
         return result
@@ -211,7 +223,7 @@ class DeepSeekClient(private val db: BrainDb) {
             )
         )
         return runCatching {
-            val data = chat(messages, maxTokens = 3000, jsonMode = true)
+            val data = chat(messages, maxTokens = 1200, jsonMode = true)
             val text = data.optJSONArray("choices")?.optJSONObject(0)
                 ?.optJSONObject("message")?.optString("content").orEmpty()
             if (text.isBlank()) null else extractJson(text)
@@ -254,7 +266,7 @@ class DeepSeekClient(private val db: BrainDb) {
             )
         )
         return runCatching {
-            val data = chat(messages, maxTokens = 1500, jsonMode = true)
+            val data = chat(messages, maxTokens = 800, jsonMode = true)
             val text = data.optJSONArray("choices")?.optJSONObject(0)
                 ?.optJSONObject("message")?.optString("content").orEmpty()
             val json = extractJson(text)
@@ -286,7 +298,7 @@ class DeepSeekClient(private val db: BrainDb) {
             )
         )
         return runCatching {
-            val data = chat(messages, maxTokens = 1200, jsonMode = true)
+            val data = chat(messages, maxTokens = 800, jsonMode = true)
             val text = data.optJSONArray("choices")?.optJSONObject(0)
                 ?.optJSONObject("message")?.optString("content").orEmpty()
             if (text.isBlank()) return@runCatching null
@@ -323,7 +335,7 @@ class DeepSeekClient(private val db: BrainDb) {
         var lastError = "verifier returned no content"
         repeat(2) { attempt ->
             val data = runCatching {
-                chat(messages, maxTokens = 3000, jsonMode = attempt == 0)
+                chat(messages, maxTokens = 1200, jsonMode = attempt == 0)
             }.getOrElse {
                 lastError = it.message ?: "verify request failed"
                 return@repeat

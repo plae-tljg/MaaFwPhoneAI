@@ -99,6 +99,27 @@ place. The previous `maa-phone-v1-debug.apk` hash is obsolete.
 - **Android token accounting**: `DeepSeekClient` accumulates provider
   `usage.total_tokens` (or prompt+completion fallback); `AgentRunner` drains it
   into `runs.ai_cost` at finish, and the Runs tab shows `cost=<n>tok`.
+- **Chat is per-run, not one concatenated context**: `DeepSeekClient` already
+  rebuilds a request as system + current user image only, with the last 8
+  actions inside the user text; it never sends the whole cross-run message
+  table. The Assistant Chat tab now selects a specific `run_id` (buttons for
+  recent runs) instead of rendering the global message stream, matching the
+  actual per-run context.
+- **Bootstrap per-step speed**: reuse the frame captured at step start for
+  native OCR (no second MaaFW Screencap task), call the vision screen observer
+  only when native OCR has no real text, cut action delay 1200→250 ms and
+  max-token caps, add per-step elapsed time to status. Mock-API run #4 went
+  from ~10.4 s to ~6.8 s for the same 2-step trajectory; real latency still
+  depends on the provider.
+- **Proposal survives a verifier false-negative**: `Learner.propose` takes
+  `visionVerified`; a failed final LLM verify still files a candidate with
+  `{"vision_verified":false,"proposed_from_failed_verification":true}` so
+  Review/Test replay can decide. Proposal conversion failures are caught and
+  surfaced in run status instead of silently dropping the trajectory.
+- **Official DeepSeek model default**: if no explicit model setting and the
+  base URL is `api.deepseek.com`, use `deepseek-chat` instead of the custom
+  gateway name `deepseek-v4-flash`; Settings carries a hint. This avoids an
+  invalid-model retry loop looking like “slow AI / no proposal”.
 - **Assistant preview reuses MaaFwApp modules**: `rememberMovablePreview`,
   `LivePreview`, `FullscreenPreview`, touch markers and watchdog state now
   drive the Assistant cell. A missed `surfaceChanged` after `setFixedSize`

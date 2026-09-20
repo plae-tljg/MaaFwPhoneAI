@@ -204,9 +204,8 @@ class BrainDb(context: Context) : SQLiteOpenHelper(context.applicationContext, D
                 "open_settings_launch",
             ),
         )
-        db.execSQL(
-            "INSERT INTO settings(key,value) VALUES('deepseek_model','deepseek-v4-flash')",
-        )
+        // Leave deepseek_model unset: DeepSeekClient picks deepseek-chat for
+        // api.deepseek.com and the packaged gateway default otherwise.
     }
 
     fun rows(sql: String, args: Array<out Any?> = emptyArray()): List<JSONObject> =

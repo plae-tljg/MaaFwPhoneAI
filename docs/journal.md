@@ -237,3 +237,28 @@ Assistant 的 Run tab 一开始直接用裸 `MaaPreviewSurface`，没接 MaaFwAp
 - `rememberSaveable` + `configChanges` 让全屏横屏请求不会重建 Activity 后丢状态。
 
 真机确认：点预览会进入全屏，UI dump 能看到 “退出全屏” 按钮。
+
+
+## 11. 对话上下文、步进慢、首跑没 pipeline 的核对（2026-09-20）
+
+用户观察到 Chat UI 像把所有对话拼在一起、每步很慢、首次 AI run 后没有
+生成 pipeline。用本地 mock OpenAI 端点（`adb reverse`）抓请求做了核对：
+
+1. **上下文没有拼成一个 JSON**。每次 `nextAction` 请求只有 system +
+   当前一帧 user 消息；历史只是 user 文本里的最近 8 条动作。`observe` /
+   `locate` / `verify` 都是独立 one-shot 请求。真正“拼在一起”的是旧
+   Chat tab：它按全局 `messages` 倒序展示所有 run。现在 Chat tab 按
+   `run_id` 过滤，顶部可选择最近 run。
+2. **每步额外开销**：native OCR 又跑一次 Screencap；每步常驻一次
+   screen-observer 模型调用；动作后固定 `delay(1200)`。现改为复用当前帧、
+   OCR 无文本时才 observer、延迟 250ms、降低 max tokens，并在状态里打印
+   每步耗时。mock 两步 run 从 10.4s 降到 6.8s（真实模型延迟另算）。
+3. **首跑无 pipeline**：两条路径都可能：官方 `api.deepseek.com` 配
+   `deepseek-v4-flash` 这种非官方模型名会一直失败/重试；最终 LLM verify
+   的假阴性会让成功轨迹被整条丢弃。现在官方 base 默认 `deepseek-chat`
+   （有设置提示），verify 失败也会生成
+   `vision_verified=false` 的候选 proposal 供 Review/Test replay；转换
+   异常会被捕获并写进 run 状态。
+
+mock 真机证据：run #3 10.4s、run #4 6.8s、run #5 verify 失败但
+proposal #3 的 evidence 是 `proposed_from_failed_verification=true`。

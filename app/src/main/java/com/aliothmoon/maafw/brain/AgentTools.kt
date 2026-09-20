@@ -92,12 +92,26 @@ class AgentTools(
      * return the recognition detail JSON. This is the bridge used by the AI
      * fallback for OCR/TemplateMatch/ColorMatch observations.
      */
-    suspend fun recognition(recoType: String = "OCR", recoParamJson: String = "{}"): JSONObject? {
-        val node = JSONObject()
-            .put("recognition", "DirectHit")
-            .put("action", "Screencap")
-        val frameResult = await(plan("brain_recognition_frame_${UUID.randomUUID()}", node)) ?: return null
-        if (frameResult !is ExecutionResult.Completed) return null
+    /**
+     * Run a real MaaFramework recognition.
+     *
+     * [freshFrame] = true captures one Screencap first. The bootstrap loop
+     * already captures at the top of every step, so it can reuse the cached
+     * frame and save one MaaFW round-trip per observation; benchmark must keep
+     * sampling fresh frames.
+     */
+    suspend fun recognition(
+        recoType: String = "OCR",
+        recoParamJson: String = "{}",
+        freshFrame: Boolean = true,
+    ): JSONObject? {
+        if (freshFrame) {
+            val node = JSONObject()
+                .put("recognition", "DirectHit")
+                .put("action", "Screencap")
+            val frameResult = await(plan("brain_recognition_frame_${UUID.randomUUID()}", node)) ?: return null
+            if (frameResult !is ExecutionResult.Completed) return null
+        }
         val raw = runCatching {
             servicePort.useService { service -> service.recognitionDirect(recoType, recoParamJson) }
         }.getOrNull() ?: return null
@@ -166,7 +180,9 @@ class AgentTools(
             "recognize" -> {
                 val recoType = action.optString("reco_type").ifBlank { "OCR" }
                 val recoParam = action.opt("reco_param")?.toString().orEmpty().ifBlank { "{}" }
-                val detail = recognition(recoType, recoParam)
+                // The loop already captured the current frame; do not burn
+                // another MaaFW Screencap task on the same picture.
+                val detail = recognition(recoType, recoParam, freshFrame = false)
                 if (detail != null) {
                     "recognized $recoType: ${detail.toString().take(1200)}"
                 } else {

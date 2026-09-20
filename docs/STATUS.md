@@ -472,6 +472,35 @@ Device-checked: tapping the Assistant preview opens the fullscreen host
 (`退出全屏` close button in the UI dump). The previous release APK v1.1.0
 predates this fix; source `main` carries it.
 
+## 2m. Chat context, step speed and verifier-failure proposals (2026-09-20 19:00 HKT)
+
+Diagnosed with a local OpenAI-compatible mock endpoint (`adb reverse`), so the
+app-side path could be measured without provider latency:
+
+- **Chat context is not one concatenated JSON.** Every `nextAction` request
+  contains a fresh `system` message plus one `user` message with the current
+  image; previous turns are only the last 8 action/result strings inside the
+  user text. `observeScreen`/`locate`/`verify` are each one-shot requests.
+  The old Chat tab queried all `messages` rows globally, which created the
+  impression of one long chat; it now filters by `run_id` and offers recent
+  run selectors.
+- **Per-step app overhead was high.** Each step re-ran a Screencap for native
+  OCR and often a whole extra screen-observer model call, plus a 1.2 s delay.
+  Now: reuse the step frame for `recognitionDirect` (`freshFrame=false`), run
+  `observeScreen` only when native OCR has no text, delay 250 ms, lower
+  max-token caps, and log elapsed per step. Mock test: same two-step run
+  dropped 10.4 s → 6.8 s (before/after); provider time is additive.
+- **No proposal after a first AI run** had two plausible causes: an invalid
+  official model (`deepseek-v4-flash` against `api.deepseek.com`), and the
+  final LLM verifier false-negativing a successful trajectory. Fresh installs
+  now default to `deepseek-chat` for official DeepSeek (with a Settings hint),
+  and a failed final verification still files a candidate marked
+  `vision_verified=false` for Review/Test replay. Conversion exceptions are
+  caught and reported.
+- Device evidence (mock provider): run #3 baseline 10.4 s; run #4 optimized
+  6.8 s; run #5 verifier-failed but proposal #3 was created with
+  `proposed_from_failed_verification=true`.
+
 ## 3. What is not working / not built
 
 | Gap | Evidence / detail | Next action |
