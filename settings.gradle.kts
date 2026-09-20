@@ -26,7 +26,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "MaaFwApp"
+rootProject.name = "MaaFwPhoneAI"
 include(":app")
 include(":hidden-api")
 // Preferences DataStore 的 schema 代码生成（@PrefSchema / @PrefKey）

@@ -286,6 +286,9 @@ class RemoteServiceImpl : RemoteService.Stub() {
 
     override fun maaVersion(): String? = MaaFrameworkLoader.library?.MaaVersion()
 
+    override fun recognitionDirect(recoType: String?, recoParamJson: String?): String? =
+        runner.recognitionDirect(recoType.orEmpty().ifBlank { "OCR" }, recoParamJson.orEmpty())
+
     /**
      * 逐项独立执行：一项失败不影响其余，返回实际授到的位
      * 失败不抛——app 侧据返回值决定要不要再引导用户手点

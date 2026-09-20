@@ -105,4 +105,12 @@ public final class DriverClass {
         Ln.i(TAG + ": keyUp result=" + result);
         return result;
     }
+
+    public static boolean inputText(String text, int displayId) {
+        Ln.i(TAG + ": inputText(len=" + (text == null ? 0 : text.length())
+                + ", displayId=" + displayId + ")");
+        boolean result = InputControlUtils.inputText(text, displayId);
+        Ln.i(TAG + ": inputText result=" + result);
+        return result;
+    }
 }

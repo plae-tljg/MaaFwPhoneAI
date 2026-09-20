@@ -81,6 +81,15 @@
             </intent-filter>
         </activity>
 
+        <!-- Assistant is opened from the main app (Settings) and by goal intents;
+             no second launcher icon. -->
+        <activity
+            android:name=".brain.AssistantActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.MaaFwApp"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- API 32- 的 per-app locale 由 appcompat 持久化并在 Activity 附着前回放（33+ 走系统） -->
         <service
             android:name="androidx.appcompat.app.AppLocalesMetadataHolderService"
@@ -178,6 +187,12 @@
 
     <queries>
         <package android:name="moe.shizuku.privileged.api" />
+        <!-- Android 11+ package visibility: allow the app catalog to see
+             interactive launcher apps (finance manager and other user apps). -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
     </queries>
 
 </manifest>

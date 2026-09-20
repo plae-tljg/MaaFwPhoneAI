@@ -103,6 +103,13 @@ interface RemoteService {
     /** MaaFramework 版本；未加载返回 null */
     String maaVersion() = 54;
 
+    /**
+     * 对 controller 当前缓存帧执行一次直接识别（OCR/TemplateMatch/ColorMatch/...）。
+     * recoParamJson 是 MaaFW recognition 参数字段；返回识别详情 JSON（含 hit/box/detail），
+     * 失败或未初始化返回 null。同步接口，调用方应确保当前没有 run 在跑。
+     */
+    String recognitionDirect(String recoType, String recoParamJson) = 55;
+
     /** 看门狗状态：0=IDLE / 1=WATCHING / 2=APP_DIED（目标 app 是否仍在虚拟屏上） */
     int watchdogState() = 60;
 

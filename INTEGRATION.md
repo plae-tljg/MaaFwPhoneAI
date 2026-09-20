@@ -1,5 +1,14 @@
 # 资源接入
 
+> **maa-phone fork note:** this checkout is the MaaFwApp fork used by the
+> maa-phone project. The upstream usage/build docs below remain valid, but
+> the fork adds the on-device `brain/` (knowledge DB, resolver, compiler,
+> runner binding, AI bootstrap, learner, importer) and the Assistant UI.
+> Start with [`MAA_PHONE.md`](MAA_PHONE.md), and for the project goal/method
+> see [`../docs/GOAL.md`](../docs/GOAL.md) and
+> [`../docs/STATUS.md`](../docs/STATUS.md).
+
+
 MaaFwApp 本身不包含业务资源。资源开发者写好 Project Interface 之后，用一份打包配方告诉本仓库「资源在哪、包名叫什么、agent 怎么拉起」，再出 APK。
 
 资源在**构建期**打进 APK。换资源就要重新出包，不能在设备上换一份 `interface.json` 接着用。

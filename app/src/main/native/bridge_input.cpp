@@ -9,6 +9,7 @@ static jmethodID g_touch_move_method = nullptr;
 static jmethodID g_touch_up_method = nullptr;
 static jmethodID g_key_down_method = nullptr;
 static jmethodID g_key_up_method = nullptr;
+static jmethodID g_input_text_method = nullptr;
 static jmethodID g_start_app_method = nullptr;
 
 /* upcall 落到 DriverClass -> InputControlUtils/ActivityUtils，那边全是对隐藏 API 的反射，
@@ -59,6 +60,22 @@ UpcallInputControl(JNIEnv *env, MethodType method, int x, int y, int contact, in
     }
 }
 
+static int UpcallInputText(JNIEnv *env, const char *text, int displayId) {
+    if (!env || !text || !g_driver_clz || !g_input_text_method) {
+        LOGE("UpcallInputText: not ready env=%p text=%p clz=%p mid=%p",
+             (void *) env, (const void *) text, (void *) g_driver_clz, (void *) g_input_text_method);
+        return -1;
+    }
+    jstring jText = env->NewStringUTF(text);
+    if (!jText || CheckJNIException(env, "NewStringUTF(inputText)")) {
+        return -1;
+    }
+    jboolean result = env->CallStaticBooleanMethod(g_driver_clz, g_input_text_method, jText, displayId);
+    int ret = FinishUpcall(env, result, "DriverClass.inputText");
+    env->DeleteLocalRef(jText);
+    return ret;
+}
+
 static int UpcallStartApp(JNIEnv *env, const char *packageName, int displayId, bool forceStop) {
     if (!env || !packageName || !g_driver_clz || !g_start_app_method) {
         LOGE("UpcallStartApp: not ready env=%p pkg=%p clz=%p mid=%p",
@@ -104,11 +121,12 @@ bool InitInputBridge(JavaVM *vm, JNIEnv *env, const char *driverClassName) {
     g_touch_up_method = env->GetStaticMethodID(g_driver_clz, "touchUp", "(IIII)Z");
     g_key_down_method = env->GetStaticMethodID(g_driver_clz, "keyDown", "(II)Z");
     g_key_up_method = env->GetStaticMethodID(g_driver_clz, "keyUp", "(II)Z");
+    g_input_text_method = env->GetStaticMethodID(g_driver_clz, "inputText", "(Ljava/lang/String;I)Z");
     g_start_app_method = env->GetStaticMethodID(g_driver_clz, "startApp", "(Ljava/lang/String;IZ)Z");
 
     if (CheckJNIException(env, "GetStaticMethodID(DriverClass)") ||
         !g_touch_down_method || !g_touch_move_method || !g_touch_up_method ||
-        !g_key_down_method || !g_key_up_method || !g_start_app_method) {
+        !g_key_down_method || !g_key_up_method || !g_input_text_method || !g_start_app_method) {
         ReleaseInputBridge(env);
         return false;
     }
@@ -122,6 +140,7 @@ void ReleaseInputBridge(JNIEnv *env) {
     g_touch_up_method = nullptr;
     g_key_down_method = nullptr;
     g_key_up_method = nullptr;
+    g_input_text_method = nullptr;
     g_start_app_method = nullptr;
 
     if (g_driver_clz && env) {
@@ -184,6 +203,8 @@ BRIDGE_API int DispatchInputMessage(MethodParam param) {
         case KEY_UP:
             return UpcallInputControl(env, KEY_UP, 0, 0, 0, param.args.key.key_code,
                                       param.display_id);
+        case INPUT:
+            return UpcallInputText(env, param.args.input.text, param.display_id);
         case START_GAME:
             return UpcallStartApp(env, param.args.start_game.package_name, param.display_id,
                                   param.args.start_game.force_stop != 0);

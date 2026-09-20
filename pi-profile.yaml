@@ -1,0 +1,6 @@
+# Build profile for the Maa-phone fork. Keep this file next to pi/.
+assets: pi
+
+app:
+  id: maaphone
+  label: Maa-phone

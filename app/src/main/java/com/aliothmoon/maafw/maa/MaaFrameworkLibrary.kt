@@ -3,6 +3,10 @@ package com.aliothmoon.maafw.maa
 import com.sun.jna.Callback
 import com.sun.jna.Library
 import com.sun.jna.Pointer
+import com.sun.jna.Structure
+import com.sun.jna.ptr.ByteByReference
+import com.sun.jna.ptr.IntByReference
+import com.sun.jna.ptr.LongByReference
 
 /**
  * MaaFramework C API 的 JNA 声明
@@ -74,6 +78,43 @@ interface MaaFrameworkLibrary : Library {
 
     fun MaaTaskerStopping(tasker: Pointer?): Byte
 
+    fun MaaTaskerPostRecognition(
+        tasker: Pointer?,
+        recoType: String?,
+        recoParam: String?,
+        image: Pointer?,
+    ): Long
+
+    fun MaaTaskerGetTaskDetail(
+        tasker: Pointer?,
+        taskId: Long,
+        entry: Pointer?,
+        nodeIdList: Pointer?,
+        nodeIdListSize: LongByReference?,
+        status: IntByReference?,
+    ): Byte
+
+    fun MaaTaskerGetNodeDetail(
+        tasker: Pointer?,
+        nodeId: Long,
+        nodeName: Pointer?,
+        recoId: LongByReference?,
+        actionId: LongByReference?,
+        completed: ByteByReference?,
+    ): Byte
+
+    fun MaaTaskerGetRecognitionDetail(
+        tasker: Pointer?,
+        recoId: Long,
+        nodeName: Pointer?,
+        algorithm: Pointer?,
+        hit: ByteByReference?,
+        box: MaaRect?,
+        detailJson: Pointer?,
+        raw: Pointer?,
+        draws: Pointer?,
+    ): Byte
+
     // ── StringBuffer ──
     // MaaAgentClient 的 identifier 走的是 buffer 而不是 char*，用完必须 Destroy
 
@@ -111,6 +152,15 @@ interface MaaFrameworkLibrary : Library {
     fun interface MaaEventCallback : Callback {
         operator fun invoke(handle: Pointer?, message: String?, details: String?, transArg: Pointer?)
     }
+}
+
+/** `MaaRect` (int32 x/y/width/height). */
+@Structure.FieldOrder("x", "y", "width", "height")
+class MaaRect : Structure() {
+    @JvmField var x: Int = 0
+    @JvmField var y: Int = 0
+    @JvmField var width: Int = 0
+    @JvmField var height: Int = 0
 }
 
 /** `MaaStatusEnum` */

@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "source": "Everything-Maa @ 8985260",
+  "description": "Family index for lazy loading. Read this first, then load only the matching family's SKILL.md and references.",
+  "families": [
+    {
+      "id": "workflow-design",
+      "label": "Workflow design",
+      "when": "Turning a user goal into a task contract and state machine before writing nodes.",
+      "skills": ["maa-workflow-build"]
+    },
+    {
+      "id": "pipeline-authoring",
+      "label": "Pipeline authoring",
+      "when": "Writing/importing MaaFW pipeline JSON, choosing OCR/template/color/ROI fields, generating options.",
+      "skills": [
+        "maa-pipeline-guide",
+        "maa-pipeline-generate",
+        "maa-pipeline-option"
+      ]
+    },
+    {
+      "id": "pipeline-testing",
+      "label": "Pipeline testing",
+      "when": "Benchmarking a node, replaying a graph, tuning ROI/threshold/order_by/index before approval.",
+      "skills": ["maa-pipeline-testing"]
+    },
+    {
+      "id": "diagnosis",
+      "label": "Diagnosis",
+      "when": "A run/pipeline node fails or behaves inconsistently; inspect logs, recognition details and recovery paths.",
+      "skills": [
+        "maa-diagnose",
+        "maa-cli-operate"
+      ]
+    },
+    {
+      "id": "reference",
+      "label": "Protocol / reference",
+      "when": "Looking up MaaFW fields, interface semantics, or general project/wiki reference.",
+      "skills": ["maa-wiki"]
+    }
+  ]
+}

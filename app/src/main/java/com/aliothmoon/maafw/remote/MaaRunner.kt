@@ -10,6 +10,7 @@ import com.aliothmoon.maafw.maa.MaaFrameworkLibrary
 import com.aliothmoon.maafw.maa.MaaFrameworkLoader
 import com.aliothmoon.maafw.maa.MaaGlobalOption
 import com.aliothmoon.maafw.maa.MaaLoggingLevel
+import com.aliothmoon.maafw.maa.MaaRect
 import com.aliothmoon.maafw.maa.MaaStatus
 import com.aliothmoon.maafw.remote.internal.PrimaryDisplayManager
 import com.aliothmoon.maafw.remote.internal.VirtualDisplayManager
@@ -20,7 +21,12 @@ import com.aliothmoon.maafw.runner.runPlanWireJson
 import com.aliothmoon.maafw.third.Ln
 import com.sun.jna.Memory
 import com.sun.jna.Pointer
+import com.sun.jna.ptr.ByteByReference
+import com.sun.jna.ptr.IntByReference
+import com.sun.jna.ptr.LongByReference
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.File
@@ -121,6 +127,102 @@ class MaaRunner(private val agentHost: AgentHost) {
             false
         } finally {
             lib.MaaImageBufferDestroy(buffer)
+        }
+    }
+
+    /**
+     * Direct recognition on the controller's cached frame. Returns a compact
+     * JSON string with hit/box/detail_json; null if MaaFW is not ready or no
+     * recognition was produced. This is the bridge that lets the in-app agent
+     * use the real MaaFW algorithms instead of pixel/vision guesses.
+     */
+    fun recognitionDirect(recoType: String, recoParamJson: String): String? {
+        val lib = MaaFrameworkLoader.library ?: return null
+        synchronized(lifecycleLock) {
+            if (running) return null
+            val currentTasker = tasker ?: return null
+            val currentController = controller ?: return null
+            val image = lib.MaaImageBufferCreate() ?: return null
+            val entry = lib.MaaStringBufferCreate() ?: return null
+            val nodeName = lib.MaaStringBufferCreate() ?: return null
+            val algorithm = lib.MaaStringBufferCreate() ?: return null
+            val detail = lib.MaaStringBufferCreate() ?: return null
+            return try {
+                if (lib.MaaControllerCachedImage(currentController, image).toInt() == 0) return null
+                val taskId = lib.MaaTaskerPostRecognition(
+                    currentTasker,
+                    recoType,
+                    recoParamJson.ifBlank { "{}" },
+                    image,
+                )
+                if (taskId == INVALID_ID) return null
+                lib.MaaTaskerWait(currentTasker, taskId)
+
+                val size = LongByReference(0)
+                val status = IntByReference(0)
+                if (lib.MaaTaskerGetTaskDetail(currentTasker, taskId, entry, null, size, status).toInt() == 0) {
+                    return null
+                }
+                val count = size.value.toInt().coerceAtLeast(0)
+                if (count <= 0) return null
+                val nodeIds = Memory(count.toLong() * Long.SIZE_BYTES)
+                if (lib.MaaTaskerGetTaskDetail(currentTasker, taskId, entry, nodeIds, size, status).toInt() == 0) {
+                    return null
+                }
+
+                var recoId = 0L
+                for (index in 0 until count) {
+                    val nodeId = nodeIds.getLong(index.toLong() * Long.SIZE_BYTES)
+                    val recoRef = LongByReference(0)
+                    val actionRef = LongByReference(0)
+                    val completed = ByteByReference(0)
+                    val ok = lib.MaaTaskerGetNodeDetail(
+                        currentTasker, nodeId, nodeName, recoRef, actionRef, completed,
+                    ).toInt() != 0
+                    if (ok && recoRef.value > 0) {
+                        recoId = recoRef.value
+                        break
+                    }
+                }
+                if (recoId <= 0) return null
+
+                val hit = ByteByReference(0)
+                val box = MaaRect()
+                val ok = lib.MaaTaskerGetRecognitionDetail(
+                    currentTasker,
+                    recoId,
+                    nodeName,
+                    algorithm,
+                    hit,
+                    box,
+                    detail,
+                    null,
+                    null,
+                ).toInt() != 0
+                if (!ok) return null
+                buildJsonObject {
+                    put("reco_id", recoId)
+                    put("node", lib.MaaStringBufferGet(nodeName) ?: "")
+                    put("algorithm", lib.MaaStringBufferGet(algorithm) ?: recoType)
+                    put("hit", hit.value.toInt() != 0)
+                    put("box", buildJsonArray {
+                        add(JsonPrimitive(box.x))
+                        add(JsonPrimitive(box.y))
+                        add(JsonPrimitive(box.width))
+                        add(JsonPrimitive(box.height))
+                    })
+                    put("detail", lib.MaaStringBufferGet(detail) ?: "")
+                }.toString()
+            } catch (e: Throwable) {
+                Ln.w("MaaRunner: recognitionDirect failed: ${e.message}")
+                null
+            } finally {
+                lib.MaaStringBufferDestroy(entry)
+                lib.MaaStringBufferDestroy(nodeName)
+                lib.MaaStringBufferDestroy(algorithm)
+                lib.MaaStringBufferDestroy(detail)
+                lib.MaaImageBufferDestroy(image)
+            }
         }
     }
 

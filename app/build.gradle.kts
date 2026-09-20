@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("maafw.android.application")
     id("maafw.android.compose")
@@ -8,14 +10,66 @@ plugins {
     alias(libs.plugins.androidx.baselineprofile)
 }
 
+// Build-time DeepSeek key for debug builds. Precedence:
+// env DEEPSEEK_API_KEY > -Pdeepseek.apiKey=... > android/.env > proto/.env
+val brainEnv = Properties().apply {
+    listOf(rootProject.file(".env"), rootProject.file("proto/.env"))
+        .firstOrNull { it.isFile }
+        ?.inputStream()?.use { load(it) }
+}
+fun brainValue(key: String): String =
+    System.getenv(key) ?: (project.findProperty(key) as? String) ?: brainEnv.getProperty(key).orEmpty()
+
+val deepseekKey = brainValue("DEEPSEEK_API_KEY")
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
+val deepseekModel = brainValue("DEEPSEEK_MODEL").ifBlank { "deepseek-v4-flash" }
+val deepseekBase = brainValue("DEEPSEEK_BASE").ifBlank { "https://api.deepseek.com" }
+
 android {
     namespace = "com.aliothmoon.maafw"
 
+    packaging {
+        jniLibs {
+            // MaaFramework release .so are already stripped. The host NDK's
+            // llvm-strip corrupts some of them (libfastdeploy_ppocr.so ends up
+            // with a broken dynamic table: "empty/missing DT_HASH"), so keep
+            // the prebuilt native libraries untouched and strip only our own.
+            keepDebugSymbols += listOf(
+                "**/libMaa*.so",
+                "**/libfastdeploy_ppocr.so",
+                "**/libopencv_world4.so",
+                "**/libonnxruntime.so",
+                "**/libc++_shared.so",
+                "**/libjnidispatch.so"
+            )
+        }
+    }
+    // Host SDK has 27.1; override the upstream-preferred 28.2 for this machine.
+    ndkVersion = "27.1.12297006"
+
     defaultConfig {
+        // Never ship a build-time key in release. Debug builds get the local
+        // .env value below; release always embeds an empty string and asks the
+        // user for the key in Settings.
+        buildConfigField("String", "DEEPSEEK_API_KEY", "\"\"")
+        buildConfigField("String", "DEEPSEEK_MODEL", "\"$deepseekModel\"")
+        buildConfigField("String", "DEEPSEEK_BASE", "\"$deepseekBase\"")
         externalNativeBuild {
             cmake {
                 arguments += "-DANDROID_STL=c++_shared"
             }
+        }
+    }
+
+    buildTypes {
+        getByName("debug") {
+            // Local development convenience only; this is why debug APKs must
+            // never be treated as distributable artifacts.
+            buildConfigField("String", "DEEPSEEK_API_KEY", "\"$deepseekKey\"")
+        }
+        getByName("release") {
+            buildConfigField("String", "DEEPSEEK_API_KEY", "\"\"")
         }
     }
 

@@ -1,13 +1,20 @@
 package com.aliothmoon.maafw.bridge;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
+import android.content.Intent;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.view.InputDevice;
 import android.view.InputEvent;
+import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 
 import com.aliothmoon.maafw.ITouchEventCallback;
+import com.aliothmoon.maafw.remote.internal.ActivityUtils;
+import com.aliothmoon.maafw.third.FakeContext;
 import com.aliothmoon.maafw.third.Ln;
 import com.aliothmoon.maafw.third.wrappers.InputManager;
 import com.aliothmoon.maafw.third.wrappers.ServiceManager;
@@ -195,6 +202,9 @@ public final class InputControlUtils {
     }
 
     public static boolean keyDown(int keyCode, int displayId) {
+        if (keyCode == KeyEvent.KEYCODE_HOME && displayId != 0) {
+            return startHomeOnDisplay(displayId);
+        }
         long downTime = SystemClock.uptimeMillis();
         KeyEvent keyEvent = new KeyEvent(downTime, downTime, KeyEvent.ACTION_DOWN, keyCode, 0);
 
@@ -205,6 +215,11 @@ public final class InputControlUtils {
     }
 
     public static boolean keyUp(int keyCode, int displayId) {
+        if (keyCode == KeyEvent.KEYCODE_HOME && displayId != 0) {
+            // The display-aware home was already launched on keyDown; do not
+            // send a global HOME that would affect the primary display too.
+            return true;
+        }
         long upTime = SystemClock.uptimeMillis();
         KeyEvent keyEvent = new KeyEvent(upTime, upTime, KeyEvent.ACTION_UP, keyCode, 0);
 
@@ -213,5 +228,105 @@ public final class InputControlUtils {
         }
 
         return getManager().injectInputEvent(keyEvent, InputManager.INJECT_INPUT_EVENT_MODE_ASYNC);
+    }
+
+    private static boolean startHomeOnDisplay(int displayId) {
+        try {
+            Intent home = new Intent(Intent.ACTION_MAIN)
+                    .addCategory(Intent.CATEGORY_HOME)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            boolean ok = ActivityUtils.INSTANCE.startActivity(home, displayId);
+            Ln.i(TAG + ": display-aware HOME on " + displayId + " -> " + ok);
+            return ok;
+        } catch (Throwable e) {
+            Ln.e(TAG + ": display-aware HOME failed", e);
+            return false;
+        }
+    }
+
+    public static boolean inputText(String text, int displayId) {
+        if (text == null || text.isEmpty()) {
+            return true;
+        }
+        // Replace, do not append: select-all then delete before typing/pasting.
+        clearFocusedField(displayId);
+        // Prefer virtual-keyboard events: they work for ASCII digits/letters and
+        // are accepted by regular EditText fields without showing an IME.
+        try {
+            KeyEvent[] events = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD)
+                    .getEvents(text.toCharArray());
+            if (events != null && events.length > 0) {
+                for (KeyEvent event : events) {
+                    if (!setDisplayId(event, displayId)) {
+                        return false;
+                    }
+                    int mode = event.getAction() == KeyEvent.ACTION_DOWN
+                            ? InputManager.INJECT_INPUT_EVENT_MODE_WAIT_FOR_FINISH
+                            : InputManager.INJECT_INPUT_EVENT_MODE_ASYNC;
+                    if (!getManager().injectInputEvent(event, mode)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+        } catch (Throwable e) {
+            Ln.w(TAG + ": key-character-map input failed, falling back to paste", e);
+        }
+        // Fallback for non-ASCII (for example Chinese): put the text on the
+        // clipboard and inject paste. This also covers IME-less fields.
+        try {
+            ClipboardManager clipboard = (ClipboardManager) FakeContext.get()
+                    .getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard == null) {
+                return false;
+            }
+            clipboard.setPrimaryClip(ClipData.newPlainText("maa-phone", text));
+            SystemClock.sleep(120);
+            long downTime = SystemClock.uptimeMillis();
+            KeyEvent down = new KeyEvent(downTime, downTime, KeyEvent.ACTION_DOWN,
+                    KeyEvent.KEYCODE_PASTE, 0);
+            KeyEvent up = new KeyEvent(downTime, downTime, KeyEvent.ACTION_UP,
+                    KeyEvent.KEYCODE_PASTE, 0);
+            if (!setDisplayId(down, displayId) || !setDisplayId(up, displayId)) {
+                return false;
+            }
+            boolean ok = getManager().injectInputEvent(down,
+                    InputManager.INJECT_INPUT_EVENT_MODE_WAIT_FOR_FINISH);
+            ok = getManager().injectInputEvent(up,
+                    InputManager.INJECT_INPUT_EVENT_MODE_ASYNC) && ok;
+            return ok;
+        } catch (Throwable e) {
+            Ln.e(TAG + ": clipboard paste input failed", e);
+            return false;
+        }
+    }
+
+    private static void clearFocusedField(int displayId) {
+        try {
+            long now = SystemClock.uptimeMillis();
+            int meta = KeyEvent.META_CTRL_ON | KeyEvent.META_CTRL_LEFT_ON;
+            KeyEvent selectAllDown = new KeyEvent(now, now, KeyEvent.ACTION_DOWN,
+                    KeyEvent.KEYCODE_A, 0, meta);
+            KeyEvent selectAllUp = new KeyEvent(now, now, KeyEvent.ACTION_UP,
+                    KeyEvent.KEYCODE_A, 0, meta);
+            if (setDisplayId(selectAllDown, displayId) && setDisplayId(selectAllUp, displayId)) {
+                getManager().injectInputEvent(selectAllDown,
+                        InputManager.INJECT_INPUT_EVENT_MODE_WAIT_FOR_FINISH);
+                getManager().injectInputEvent(selectAllUp,
+                        InputManager.INJECT_INPUT_EVENT_MODE_ASYNC);
+            }
+            KeyEvent deleteDown = new KeyEvent(now, now, KeyEvent.ACTION_DOWN,
+                    KeyEvent.KEYCODE_DEL, 0);
+            KeyEvent deleteUp = new KeyEvent(now, now, KeyEvent.ACTION_UP,
+                    KeyEvent.KEYCODE_DEL, 0);
+            if (setDisplayId(deleteDown, displayId) && setDisplayId(deleteUp, displayId)) {
+                getManager().injectInputEvent(deleteDown,
+                        InputManager.INJECT_INPUT_EVENT_MODE_WAIT_FOR_FINISH);
+                getManager().injectInputEvent(deleteUp,
+                        InputManager.INJECT_INPUT_EVENT_MODE_ASYNC);
+            }
+        } catch (Throwable e) {
+            Ln.w(TAG + ": clear focused field failed (continuing)", e);
+        }
     }
 }

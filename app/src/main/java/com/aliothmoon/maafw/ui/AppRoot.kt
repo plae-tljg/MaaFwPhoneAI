@@ -66,6 +66,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalConfiguration
+import android.content.Intent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -115,6 +116,7 @@ import com.aliothmoon.maafw.ui.logs.AppLogScreen
 import com.aliothmoon.maafw.ui.logs.LogExportController
 import com.aliothmoon.maafw.ui.logs.RunLogArchiveScreen
 import com.aliothmoon.maafw.ui.logs.RunLogDetailScreen
+import com.aliothmoon.maafw.brain.AssistantActivity
 import com.aliothmoon.maafw.ui.navigation.Routes
 import com.aliothmoon.maafw.ui.pip.LocalIsInPip
 import com.aliothmoon.maafw.ui.notification.NotificationSettingsScreen
@@ -485,6 +487,9 @@ fun AppRoot(
                         onOpenAppLog = { navController.navigate(Routes.APP_LOG) },
                         onOpenNotificationSettings = { navController.navigate(Routes.NOTIFICATION_SETTINGS) },
                         onExportLogs = { exportSheetVisible = true },
+                        onOpenAssistant = {
+                            context.startActivity(Intent(context, AssistantActivity::class.java))
+                        },
                         modifier = Modifier.fillMaxSize(),
                     )
                 }

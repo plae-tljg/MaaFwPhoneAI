@@ -1,0 +1,19 @@
+{
+  "MaaPhoneOpenSettings": {
+    "recognition": "DirectHit",
+    "action": "StartApp",
+    "package": "com.android.settings",
+    "next": ["MaaPhoneDone"]
+  },
+  "MaaPhoneOpenCamera": {
+    "recognition": "DirectHit",
+    "action": "StartApp",
+    "package": "com.android.camera",
+    "next": ["MaaPhoneDone"]
+  },
+  "MaaPhoneDone": {
+    "recognition": "DirectHit",
+    "action": "DoNothing",
+    "next": []
+  }
+}

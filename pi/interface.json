@@ -1,0 +1,36 @@
+{
+  "interface_version": 2,
+  "name": "maa-phone-demo",
+  "label": "Maa-phone Demo",
+  "title": "Maa-phone M0",
+  "version": "0.1.0",
+  "description": "Minimal PI resource used to prove the MaaFwApp fork builds and runs on-device.",
+  "controller": [
+    {
+      "name": "Android",
+      "label": "Android",
+      "type": "Adb",
+      "display_short_side": 720
+    }
+  ],
+  "resource": [
+    {
+      "name": "Builtin",
+      "label": "Builtin",
+      "path": ["resource"]
+    }
+  ],
+  "task": [
+    {
+      "name": "Demo: open Settings",
+      "label": "Demo: open Settings",
+      "entry": "MaaPhoneOpenSettings",
+      "default_check": true
+    },
+    {
+      "name": "Demo: open Camera",
+      "label": "Demo: open Camera",
+      "entry": "MaaPhoneOpenCamera"
+    }
+  ]
+}
