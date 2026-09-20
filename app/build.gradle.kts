@@ -90,6 +90,26 @@ android {
     }
 }
 
+// BrainDb reads assets/brain/schema.sql at runtime. The canonical schema lives
+// at the repository root; sync it into the APK assets so a fresh install and
+// an upgrade installation see the same forward-only schema.
+val brainAssetsDir = layout.buildDirectory.dir("generated/brainAssets")
+val syncBrainSchema = tasks.register<Sync>("syncBrainSchema") {
+    from(rootProject.file("schema.sql"))
+    into(brainAssetsDir.map { it.dir("brain") })
+}
+tasks.named("preBuild") { dependsOn(syncBrainSchema) }
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
+    dependsOn(syncBrainSchema)
+    inputs.files(syncBrainSchema)
+}
+brainAssetsDir.get().asFile.mkdirs()
+androidComponents {
+    onVariants { variant ->
+        variant.sources.assets?.addStaticSourceDirectory(brainAssetsDir.get().asFile.absolutePath)
+    }
+}
+
 baselineProfile {
     // 落进 src/main 而不是 src/release：测量用的 benchmark 是另一个 build type，
     // 吃不到 src/release 的源集，不合并的话量出来会是「profile 毫无效果」

@@ -152,6 +152,79 @@ class BrainRunner(
         }
     }
 
+    data class QueueOutcome(
+        val done: Int,
+        val failed: Int,
+        val cancelled: Boolean,
+    )
+
+    /**
+     * Sequential mission runner. Pause is checked between items (a running
+     * MaaFW item is allowed to finish; Cancel uses RunnerPort.stop to interrupt
+     * it sooner). The persisted `mission_queue` rows keep the queue visible and
+     * resumable after Activity recreation.
+     */
+    suspend fun runMissionQueue(
+        missionId: Long,
+        isPaused: () -> Boolean,
+        isCancelled: () -> Boolean,
+        onQueueChanged: () -> Unit = {},
+    ): QueueOutcome {
+        db.exec(
+            "UPDATE mission_queue SET state='queued' WHERE mission_id=? AND state='running'",
+            arrayOf<Any?>(missionId),
+        )
+        val queue = db.missionQueue(missionId)
+        var done = 0
+        var failed = 0
+        var cancelled = false
+        for ((index, row) in queue.withIndex()) {
+            if (isCancelled()) {
+                cancelled = true
+                for (rest in queue.drop(index)) {
+                    db.setMissionQueueState(rest.getLong("id"), "cancelled")
+                }
+                break
+            }
+            while (isPaused() && !isCancelled()) delay(500)
+            if (isCancelled()) {
+                cancelled = true
+                for (rest in queue.drop(index)) {
+                    db.setMissionQueueState(rest.getLong("id"), "cancelled")
+                }
+                break
+            }
+            val queueId = row.getLong("id")
+            val itemId = row.getLong("mission_item_id")
+            db.setMissionQueueState(queueId, "running")
+            onQueueChanged()
+            val result = runCatching { runMissionItem(itemId) }.getOrElse { error ->
+                GoalResult("error", "Queue item #$itemId crashed: ${error.message ?: error.javaClass.simpleName}")
+            }
+            val state = when (result.status) {
+                "done" -> "done"
+                "cancelled" -> "cancelled"
+                else -> "failed"
+            }
+            db.setMissionQueueState(queueId, state, result.runId, result.message)
+            onQueueChanged()
+            when (state) {
+                "done" -> done++
+                "cancelled" -> {
+                    cancelled = true
+                    failed++
+                    for (rest in queue.drop(index + 1)) {
+                        db.setMissionQueueState(rest.getLong("id"), "cancelled")
+                    }
+                    onQueueChanged()
+                    break
+                }
+                else -> failed++
+            }
+        }
+        return QueueOutcome(done, failed, cancelled)
+    }
+
     /**
      * Run one mission item. A pipeline item executes the pinned version when
      * present, otherwise the pipeline's current live definition. A goal-only

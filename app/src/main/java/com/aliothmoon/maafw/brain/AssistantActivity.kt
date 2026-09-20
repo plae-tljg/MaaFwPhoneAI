@@ -12,6 +12,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -61,7 +63,11 @@ import com.aliothmoon.maafw.theme.MaaFwTheme
 import com.aliothmoon.maafw.ui.components.MaaButton
 import com.aliothmoon.maafw.ui.components.MaaOutlinedButton
 import com.aliothmoon.maafw.ui.components.MaaPreviewSurface
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -80,6 +86,83 @@ class AssistantActivity : ComponentActivity() {
     private var pendingGoal by mutableStateOf<String?>(null)
     private var pendingMaintain by mutableStateOf(false)
 
+    /** Queue work outlives individual Composables; Activity destruction cancels it. */
+    private val brainScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var queueJob: Job? = null
+
+    @Volatile
+    private var queuePaused = false
+
+    @Volatile
+    private var queueCancelled = false
+
+    fun startMissionQueue(missionId: Long) {
+        if (queueJob?.isActive == true) return
+        queuePaused = false
+        queueCancelled = false
+        runCatching { db.clearMissionSchedule(missionId) }
+        queueJob = brainScope.launch {
+            runCatching {
+                db.enqueueMission(missionId)
+                brain.runMissionQueue(
+                    missionId = missionId,
+                    isPaused = { queuePaused },
+                    isCancelled = { queueCancelled },
+                )
+            }
+        }
+    }
+
+    fun pauseMissionQueue() {
+        queuePaused = true
+    }
+
+    fun resumeMissionQueue() {
+        queuePaused = false
+    }
+
+    fun cancelMissionQueue() {
+        queueCancelled = true
+        brainScope.launch { runCatching { runnerPort.stop() } }
+    }
+
+    fun scheduleMissionQueue(missionId: Long, delayMs: Long) {
+        if (delayMs <= 0) return
+        queueCancelled = false
+        brainScope.launch {
+            delay(delayMs)
+            if (!queueCancelled) startMissionQueue(missionId)
+        }
+    }
+
+    /**
+     * In-app schedule recovery: the existing Android Schedule stack owns
+     * project runs; mission queues are rescheduled when the Assistant opens
+     * and run while its process stays alive.
+     */
+    private fun restoreMissionSchedules() {
+        brainScope.launch {
+            runCatching {
+                val now = System.currentTimeMillis()
+                for (row in db.scheduledMissions()) {
+                    val schedule = runCatching { JSONObject(row.optString("schedule_json")) }.getOrNull()
+                        ?: continue
+                    val runAt = schedule.optLong("run_at", 0L)
+                    if (runAt <= 0L) continue
+                    val delayMs = runAt - now
+                    if (delayMs <= 0L) startMissionQueue(row.getLong("id"))
+                    else scheduleMissionQueue(row.getLong("id"), delayMs)
+                }
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        queueJob?.cancel()
+        brainScope.cancel()
+        super.onDestroy()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         db = BrainDb(this)
@@ -91,6 +174,7 @@ class AssistantActivity : ComponentActivity() {
         brain = BrainRunner(this, db, runnerPort, servicePort) { goal -> agent.run(goal) }
         pendingGoal = intent?.getStringExtra(EXTRA_GOAL)
         pendingMaintain = intent?.getBooleanExtra(EXTRA_MAINTAIN, false) ?: false
+        restoreMissionSchedules()
         setContent {
             MaaFwTheme {
                 AssistantApp(
@@ -105,6 +189,13 @@ class AssistantActivity : ComponentActivity() {
                     onStop = {
                         agent.requestCancel()
                         runnerPort.stop()
+                    },
+                    onStartQueue = { missionId -> startMissionQueue(missionId) },
+                    onPauseQueue = { pauseMissionQueue() },
+                    onResumeQueue = { resumeMissionQueue() },
+                    onCancelQueue = { cancelMissionQueue() },
+                    onScheduleQueue = { missionId, delayMs ->
+                        scheduleMissionQueue(missionId, delayMs)
                     },
                 )
             }
@@ -126,7 +217,7 @@ class AssistantActivity : ComponentActivity() {
 
 private enum class AssistantTab(val label: String) {
     ASSISTANT("Run"),
-    LOGS("Logs"),
+    LOGS("Chat"),
     RUNS("Runs"),
     MISSIONS("Missions"),
     REVIEW("Review"),
@@ -146,6 +237,11 @@ private fun AssistantApp(
     pendingMaintain: Boolean,
     onGoalConsumed: () -> Unit,
     onStop: suspend () -> Unit,
+    onStartQueue: (Long) -> Unit,
+    onPauseQueue: () -> Unit,
+    onResumeQueue: () -> Unit,
+    onCancelQueue: () -> Unit,
+    onScheduleQueue: (Long, Long) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -162,8 +258,10 @@ private fun AssistantApp(
     var messages by remember { mutableStateOf(emptyList<JSONObject>()) }
     var missions by remember { mutableStateOf(emptyList<JSONObject>()) }
     var missionItems by remember { mutableStateOf(emptyList<JSONObject>()) }
+    var missionQueue by remember { mutableStateOf(emptyList<JSONObject>()) }
     var livePipelines by remember { mutableStateOf(emptyList<JSONObject>()) }
     var selectedMissionId by remember { mutableLongStateOf(0L) }
+    var recoveredQuestion by remember { mutableStateOf<JSONObject?>(null) }
     var dataTable by remember { mutableStateOf("runs") }
     var tableRows by remember { mutableStateOf(emptyList<JSONObject>()) }
     var latestShot by remember { mutableStateOf<String?>(null) }
@@ -200,7 +298,7 @@ private fun AssistantApp(
         scope.launch {
             val missionId = selectedMissionId
             val loaded = withContext(Dispatchers.IO) {
-                listOf(
+                listOf<Any?>(
                     db.rows("SELECT id,goal,state,success,verified,ai_cost,error,duration_ms FROM runs ORDER BY id DESC LIMIT 30"),
                     db.rows(
                         "SELECT p.id,p.kind,p.status,p.source_run_id,p.target_pipeline_id,p.target_version_id," +
@@ -210,18 +308,25 @@ private fun AssistantApp(
                             " WHERE pvr.pipeline_version_id=p.target_version_id) evidence " +
                             "FROM proposals p ORDER BY p.id DESC LIMIT 30",
                     ),
-                    db.rows("SELECT id,run_id,role,kind,substr(content,1,200) content FROM messages ORDER BY id DESC LIMIT 80"),
+                    db.rows(
+                        "SELECT id,run_id,role,kind,content,state,payload_json " +
+                            "FROM messages ORDER BY id DESC LIMIT 80",
+                    ),
                     db.missions(),
                     db.rows("SELECT id,name,goal FROM pipelines WHERE status='live' ORDER BY name"),
                     if (missionId > 0) db.missionItems(missionId) else emptyList(),
+                    db.latestPendingQuestion(),
+                    if (missionId > 0) db.missionQueue(missionId) else emptyList(),
                 )
             }
-            runs = loaded[0]
-            proposals = loaded[1]
-            messages = loaded[2].reversed()
-            missions = loaded[3]
-            livePipelines = loaded[4]
-            missionItems = loaded[5]
+            runs = loaded[0] as List<JSONObject>
+            proposals = loaded[1] as List<JSONObject>
+            messages = (loaded[2] as List<JSONObject>).reversed()
+            missions = loaded[3] as List<JSONObject>
+            livePipelines = loaded[4] as List<JSONObject>
+            missionItems = loaded[5] as List<JSONObject>
+            recoveredQuestion = loaded[6] as JSONObject?
+            missionQueue = loaded[7] as List<JSONObject>
             val base = context.getExternalFilesDir("brain")
             val shots = if (base != null) File(base, "shots") else null
             latestShot = shots?.listFiles()?.filter { it.name.endsWith(".png") }
@@ -364,6 +469,7 @@ private fun AssistantApp(
                     db = db,
                     missions = missions,
                     missionItems = missionItems,
+                    missionQueue = missionQueue,
                     livePipelines = livePipelines,
                     selectedMissionId = selectedMissionId,
                     busy = busy,
@@ -373,6 +479,11 @@ private fun AssistantApp(
                     },
                     onChanged = { status = it; tick++ },
                     onRunItem = runMissionItem,
+                    onStartQueue = onStartQueue,
+                    onPauseQueue = onPauseQueue,
+                    onResumeQueue = onResumeQueue,
+                    onCancelQueue = onCancelQueue,
+                    onScheduleQueue = onScheduleQueue,
                 )
                 AssistantTab.REVIEW -> ReviewTab(
                     db = db,
@@ -410,12 +521,57 @@ private fun AssistantApp(
         }
     }
 
-    pendingQuestion?.let { question ->
+    if (pendingQuestion != null) {
         AgentQuestionDialog(
-            question = question,
+            question = pendingQuestion!!,
             onAnswer = { answer -> agent.submitAnswer(answer) },
             onCancel = { agent.requestCancel() },
         )
+    } else {
+        recoveredQuestion?.let { recovered ->
+            val payload = runCatching { JSONObject(recovered.optString("payload_json")) }
+                .getOrDefault(JSONObject())
+            val options = mutableListOf<String>()
+            payload.optJSONArray("options")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    arr.optString(i).trim().takeIf { it.isNotBlank() }?.let { options += it }
+                }
+            }
+            val pending = AgentRunner.PendingQuestion(
+                runId = recovered.optLong("run_id"),
+                messageId = recovered.optLong("message_id"),
+                question = recovered.optString("question").ifBlank { "A previous run needs input." },
+                options = options,
+                allowFreeText = if (payload.has("allow_free_text")) {
+                    payload.optBoolean("allow_free_text", true)
+                } else {
+                    options.isEmpty()
+                },
+            )
+            AgentQuestionDialog(
+                question = pending,
+                onAnswer = { answer ->
+                    busy = true
+                    status = "Resuming run #${pending.runId} …"
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            agent.resume(pending.runId, pending.messageId, answer)
+                        }
+                        status = "[${result.status}] ${result.message}"
+                        recoveredQuestion = null
+                        busy = false
+                        tick++
+                    }
+                },
+                onCancel = {
+                    scope.launch {
+                        withContext(Dispatchers.IO) { agent.cancelPendingRun(pending.runId) }
+                        recoveredQuestion = null
+                        tick++
+                    }
+                },
+            )
+        }
     }
 }
 
@@ -479,6 +635,7 @@ private fun AgentQuestionDialog(
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AssistantTabContent(
     db: BrainDb,
@@ -532,11 +689,23 @@ private fun AssistantTabContent(
             modifier = Modifier.fillMaxWidth(),
             maxLines = 3,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            MaaButton(onClick = onRun, enabled = !busy) { Text(if (busy) "Running…" else "Run") }
-            MaaOutlinedButton(onClick = onMaintain, enabled = !busy) { Text("Replay + improve") }
-            MaaOutlinedButton(onClick = onStop, enabled = busy) { Text("Stop") }
-            MaaOutlinedButton(onClick = onImport) { Text("Import pipeline") }
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            MaaButton(onClick = onRun, enabled = !busy) {
+                Text(if (busy) "Running…" else "Run", maxLines = 1)
+            }
+            MaaOutlinedButton(onClick = onMaintain, enabled = !busy) {
+                Text("Replay + improve", maxLines = 1)
+            }
+            MaaOutlinedButton(onClick = onStop, enabled = busy) {
+                Text("Stop", maxLines = 1)
+            }
+            MaaOutlinedButton(onClick = onImport) {
+                Text("Import pipeline", maxLines = 1)
+            }
         }
         Text(status, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 10.dp))
         Text(
@@ -559,27 +728,65 @@ private fun LogsTab(messages: List<JSONObject>) {
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize().padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        items(messages) { message ->
-            val kind = message.optString("kind")
-            val isError = message.optString("content").startsWith("Failed") ||
-                kind == "result" && message.optString("content").contains("failed", ignoreCase = true)
-            Card(
-                Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (isError) MaterialTheme.colorScheme.errorContainer
-                    else MaterialTheme.colorScheme.surfaceVariant,
-                ),
-            ) {
-                Column(Modifier.padding(10.dp)) {
+        items(messages) { message -> ChatMessage(message) }
+    }
+}
+
+@Composable
+private fun ChatMessage(message: JSONObject) {
+    val role = message.optString("role").ifBlank { "assistant" }
+    val kind = message.optString("kind")
+    val state = message.optString("state")
+    val isUser = role == "user"
+    val isQuestion = kind == "question"
+    val isError = message.optString("content").startsWith("Failed") ||
+        (kind == "result" &&
+            message.optString("content").contains("failed", ignoreCase = true) &&
+            !message.optString("content").startsWith("Cancelled"))
+    val background = when {
+        isError -> MaterialTheme.colorScheme.errorContainer
+        isQuestion -> MaterialTheme.colorScheme.tertiaryContainer
+        isUser -> MaterialTheme.colorScheme.primaryContainer
+        else -> MaterialTheme.colorScheme.surfaceVariant
+    }
+    val payload = runCatching { JSONObject(message.optString("payload_json")) }.getOrNull()
+    val options = mutableListOf<String>()
+    payload?.optJSONArray("options")?.let { arr ->
+        for (i in 0 until arr.length()) {
+            arr.optString(i).takeIf { it.isNotBlank() }?.let { options += it }
+        }
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(0.88f),
+            colors = CardDefaults.cardColors(containerColor = background),
+        ) {
+            Column(Modifier.padding(10.dp)) {
+                Text(
+                    "#${message.optLong("id")} · run=${message.optLong("run_id")} · " +
+                        "$role/$kind" + if (state.isNotBlank()) " · $state" else "",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(message.optString("content"), style = MaterialTheme.typography.bodyMedium)
+                if (isQuestion && options.isNotEmpty()) {
                     Text(
-                        "#${message.optLong("id")} · run=${message.optLong("run_id")} · " +
-                            "${message.optString("role")}/${kind}",
+                        "options: " + options.joinToString(" | "),
                         style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Text(message.optString("content"), style = MaterialTheme.typography.bodySmall)
+                }
+                if (isQuestion && state == "pending") {
+                    Text(
+                        "waiting for the answer modal",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.tertiary,
+                    )
                 }
             }
         }
@@ -615,16 +822,24 @@ private fun MissionsTab(
     db: BrainDb,
     missions: List<JSONObject>,
     missionItems: List<JSONObject>,
+    missionQueue: List<JSONObject>,
     livePipelines: List<JSONObject>,
     selectedMissionId: Long,
     busy: Boolean,
     onSelectMission: (Long) -> Unit,
     onChanged: (String) -> Unit,
     onRunItem: (Long) -> Unit,
+    onStartQueue: (Long) -> Unit,
+    onPauseQueue: () -> Unit,
+    onResumeQueue: () -> Unit,
+    onCancelQueue: () -> Unit,
+    onScheduleQueue: (Long, Long) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var newMissionName by remember { mutableStateOf("") }
     var newItemGoal by remember { mutableStateOf("") }
+    var scheduleMinutes by remember { mutableStateOf("10") }
+    var queueStatus by remember { mutableStateOf("") }
     val selected = missions.firstOrNull { it.optLong("id") == selectedMissionId }
 
     LazyColumn(
@@ -707,6 +922,107 @@ private fun MissionsTab(
                             fontWeight = FontWeight.Bold,
                         )
                         MaaOutlinedButton(onClick = { onSelectMission(0L) }) { Text("Back to missions") }
+                    }
+                }
+            }
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Queue", fontWeight = FontWeight.Bold)
+                        Text(
+                            "Run all enabled items sequentially. Pause takes effect between items; " +
+                                "Cancel stops the current MaaFW run and cancels the rest of the queue.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            MaaButton(
+                                onClick = {
+                                    queueStatus = "queue started"
+                                    onStartQueue(selectedMissionId)
+                                },
+                                enabled = !busy,
+                            ) { Text("Run all") }
+                            MaaOutlinedButton(onClick = {
+                                queueStatus = "queue paused (between items)"
+                                onPauseQueue()
+                            }) { Text("Pause") }
+                            MaaOutlinedButton(onClick = {
+                                queueStatus = "queue resumed"
+                                onResumeQueue()
+                            }) { Text("Resume") }
+                            MaaOutlinedButton(onClick = {
+                                queueStatus = "queue cancelling"
+                                onCancelQueue()
+                            }) { Text("Cancel") }
+                            MaaOutlinedButton(onClick = {
+                                scope.launch {
+                                    withContext(Dispatchers.IO) { db.clearMissionQueue(selectedMissionId) }
+                                    queueStatus = "queue cleared"
+                                    onChanged("mission queue cleared")
+                                }
+                            }) { Text("Clear queue") }
+                        }
+                        OutlinedTextField(
+                            value = scheduleMinutes,
+                            onValueChange = { value -> scheduleMinutes = value.filter(Char::isDigit).take(4) },
+                            label = { Text("Schedule run-all in minutes") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        MaaButton(
+                            onClick = {
+                                val minutes = scheduleMinutes.toLongOrNull() ?: 0L
+                                if (minutes > 0) {
+                                    val delayMs = minutes * 60_000L
+                                    queueStatus = "scheduled in $minutes min"
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) {
+                                            db.setMissionSchedule(
+                                                selectedMissionId,
+                                                JSONObject()
+                                                    .put("run_at", System.currentTimeMillis() + delayMs)
+                                                    .put("status", "scheduled")
+                                                    .toString(),
+                                            )
+                                        }
+                                        onScheduleQueue(selectedMissionId, delayMs)
+                                    }
+                                }
+                            },
+                            enabled = !busy && (scheduleMinutes.toLongOrNull() ?: 0L) > 0,
+                        ) { Text("Schedule run all") }
+                        if (queueStatus.isNotBlank()) {
+                            Text(
+                                queueStatus,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        if (missionQueue.isEmpty()) {
+                            Text(
+                                "No persisted queue yet.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            missionQueue.forEach { q ->
+                                Text(
+                                    "pos=${q.optLong("position")} #${q.optLong("id")} " +
+                                        "${q.optString("state")} " +
+                                        (q.optString("pipeline_name").ifBlank { q.optString("goal") }) +
+                                        if (q.optString("error").isNotBlank()) " error=${q.optString("error").take(80)}" else "",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = when (q.optString("state")) {
+                                        "failed", "cancelled" -> MaterialTheme.colorScheme.error
+                                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                )
+                            }
+                        }
                     }
                 }
             }

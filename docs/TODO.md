@@ -1,12 +1,13 @@
 # TODO / status ledger
 
-Snapshot: **2026-09-20 16:10 HKT**, after the deterministic-postcondition /
-OCR-model / legacy-graph repair work plus agent IO (`ask`/`needs_input`) and
-the first Mission UI + runner. Debug builds are local-only; on-device evidence
-is run #42 (verified OCR replay) and run #43 (mission item run).
+Snapshot: **2026-09-20 16:45 HKT**, after the MaaMCP/Everything-Maa authoring
+pass, proposal #12 approval + mission replay, persistent agent-question
+recovery, chat transcript, Mission queue/pause/cancel/schedule, and the
+Import-pipeline button layout fix. Debug builds are local-only; device evidence
+is runs #42/#43/#45/#46-#49/#52.
 
-Current source debug build: install over v1; DB v3 migration repairs legacy
-graphs in place. The previous `maa-phone-v1-debug.apk` hash is obsolete.
+Current source: DB v4 adds `mission_queue`; install over v3/v2 upgrades in
+place. The previous `maa-phone-v1-debug.apk` hash is obsolete.
 
 ## 0. Recently completed
 
@@ -98,6 +99,33 @@ graphs in place. The previous `maa-phone-v1-debug.apk` hash is obsolete.
 - **Android token accounting**: `DeepSeekClient` accumulates provider
   `usage.total_tokens` (or prompt+completion fallback); `AgentRunner` drains it
   into `runs.ai_cost` at finish, and the Runs tab shows `cost=<n>tok`.
+- **Import-pipeline button fix**: the Run tab action row is now a `FlowRow`
+  with `maxLines=1`; "Import pipeline" no longer squeezes to one character per
+  row (device UI dump confirms its own row).
+- **MaaMCP / Everything-Maa authoring pass**: `proto/pipelines/clock_app_maamcp.json`
+  is a real native graph authored with the MaaMCP pipeline protocol and the
+  vendored Everything-Maa guide/generate/testing skills. `Importer` now accepts
+  a thin `{pipeline, entry, postcondition}` wrapper, creates a
+  `pipelines` + candidate `pipeline_versions` row, and device Test replay
+  verified it: proposal #14 → version #13 → run #52 `verified=1` with OCR hit
+  `闹钟`. Plain-map import proposal #13 → run #44 also `verified=1`.
+- **Proposal #12 approved and replayed as a mission item**: Review approval
+  promoted version #12/pipeline #9 live; mission item #2 run #45 finished
+  `path='pipeline'`, `mission_item_id=2`, `verified=1`.
+- **Persistent agent-question recovery + chat transcript**: question messages
+  are inserted with `state='pending'`; `BrainDb.latestPendingQuestion()` joins
+  `runs.state='needs_input'` with the unresolved message, and the Assistant
+  reopens the modal after Activity/process recreation. Answering calls
+  `AgentRunner.resume`, which reconstructs trajectory/history from
+  `runs.steps_json` and continues the run; Cancel dismisses the question and
+  cancels the run. The Chat tab renders a role-aligned transcript with
+  question/options/state labels.
+- **Mission queue / pause / cancel / schedule**: DB v4 `mission_queue` persists
+  queued/running/done/failed/cancelled items and their run ids. Run all,
+  Pause/Resume (between items), Cancel (stops the current MaaFW run), Clear
+  queue, and an in-app scheduled run-all are in the Missions tab. Device
+  evidence: queue run #46/#47, schedule run #48/#49, all `done` with
+  `mission_item_id` links.
 - **Mission UI + runner**: new Assistant **Missions** tab creates/deletes
   missions, pins live pipelines or adds goal items, enables/disables items,
   runs an item through `BrainRunner.runMissionItem`, and shows the latest run
@@ -113,7 +141,7 @@ graphs in place. The previous `maa-phone-v1-debug.apk` hash is obsolete.
 | P0-2 | Stop using HOME as virtual-display normalization | Run #10 showed every screenshot black after `key home`: the launcher on the secondary display does not render, and HOME is global. MaaFwApp/MAA-Meow resolve packages with `PackageManager.getLaunchIntentForPackage` and launch them directly; we sync launchable apps into the `apps` registry and launch by package. Run #12 (`open the finance manager app`) now passes. HOME/drawer stays an optional foreground-only test. | ✅ done (run #12 verified) |
 | P0-3 | Version Review UI | List candidate `pipeline_versions`, show graph/steps/evidence, approve/reject; approval updates live pipeline. | mostly done: Review cards now show goal/entry/nodes/postcondition and linked replay runs; a full diff/version history view is still missing |
 | P0-4 | Deterministic postcondition for approved pipelines | First-time AI may use the LLM verifier; after approval a pipeline replay must use `pixel`/`element`/`file_count`/`screen_text`/Custom. | ✅ recognition-style (`element`/`screen_text`/bare MaaFW map) wired and device-verified by run #42; `pixel` and `file_count` wired, file_count still needs a device scenario test. |
-| P0-5 | Mission UI + runner | Create missions, add pipeline/version items, run an item into `runs(path='pipeline')`; failures become evidence. | ✅ MVP done: Missions tab creates/pins/enables/deletes; `runMissionItem` records mission provenance and postcondition evidence (device run #43). Scheduling/queue semantics remain M2. |
+| P0-5 | Mission UI + runner | Create missions, add pipeline/version items, run an item into `runs(path='pipeline')`; failures become evidence. | ✅ done through M2 MVP: create/pin/enable/delete, single-item and queued runs, pause/cancel, persisted queue and in-app schedule (runs #43/#45–49). Android alarm-independent background scheduling is not claimed. |
 | P0-6 | Graph-native execution | Execute stored `next`/`on_error`/anchors as a graph; stop flattening/renaming nodes. | ✅ compiler/runner graph-native and conditional AI-authored graph #12 Test replay verified (run #42); a tested externally imported M9A/Bilibili graph is still pending. |
 
 ## 2. P1 — bootstrap reliability and AI maintenance
@@ -126,14 +154,14 @@ graphs in place. The previous `maa-phone-v1-debug.apk` hash is obsolete.
 | P1-4 | Android token accounting | Parse provider usage into `runs.ai_cost`; show cost in Runs. | ✅ done: `usage.total_tokens` (or prompt+completion) drains into `runs.ai_cost`; Runs shows `cost=<n>tok` |
 | P1-5 | Search-field recovery polish | Auto-recovery currently types query on repeated field taps; make it logged/visible and test with several apps. | implemented, needs test |
 | P1-6 | Register apps/hints for finance and other test targets | Add `<queries><intent MAIN/LAUNCHER>` so the catalog sees all launchable apps; verify `com.anonymous.financemanager` and other user apps. | ✅ done (run #12); keep aliases/hints updated as needed |
-| P1-8 | Chat-like agent IO with approve/ask | A ChatGPT/Codex/opencode-like thread/modal: assistant can show a plan or question, offer option buttons (Yes/No/Apply/Cancel) plus a free-text field, let the user answer, and continue the run from `needs_input`. | ✅ `ask` tool + `needs_input` state + option/free-text modal + continuation implemented (device-rendered modal; cancel path tested). A persistent chat transcript view can still be improved later. |
+| P1-8 | Chat-like agent IO with approve/ask | A ChatGPT/Codex/opencode-like thread/modal: assistant can show a plan or question, offer option buttons (Yes/No/Apply/Cancel) plus a free-text field, let the user answer, and continue the run from `needs_input`. | ✅ done incl. recovery: `ask` tool, option/free-text modal, `needs_input`, persisted pending question, process-recovery resume from `steps_json`, and a role-aligned Chat transcript tab. |
 | P1-7 | Repeat/loop guard policy | Distinguish “repeat tap without progress” from legitimate multi-step waits; fail early with a useful message. | implemented as `agent_repeat_limit` (empty/failed results + identical action signatures), plus the three-tap/screen-recognition point guard; native OCR observations are now fed by packaged models, but model-supplied `tap` points still need the same guard |
 
 ## 3. P2 — authoring, healing and trust
 
 | # | Task | Why / acceptance | Status |
 |---|---|---|---|
-| P2-1 | MaaMCP + Everything-Maa authoring pass | Produce a native Bilibili pipeline graph with OCR/TemplateMatch/ColorMatch/ROI, benchmark nodes, import and replay. | MaaMCP/exporter/import bridge exist; pass not run |
+| P2-1 | MaaMCP + Everything-Maa authoring pass | Produce a native pipeline graph with OCR/TemplateMatch/ColorMatch/ROI, benchmark nodes, import and replay. | ✅ first pass done: clock-app OCR/ROI graph in `proto/pipelines/`, imported as candidate versions #13, Test replay run #52 `verified=1`; a Bilibili/TemplateMatch workflow remains future work. |
 | P2-2 | MaaFW Record/Replay/Dbg or MaaMCP `benchmark_node` promotion gate | Replay-K before a version goes live. | Android now has a single candidate Test replay + `pipeline_version_runs` evidence; replay-K and deterministic verification still not wired |
 | P2-3 | Automatic element healing | Failed recognition creates `element_fix` with new ROI/template/benchmark evidence. | not done |
 | P2-4 | Scenario specs per user story | Camera, Bilibili, finance-app budget/transaction, dark mode. | not done |

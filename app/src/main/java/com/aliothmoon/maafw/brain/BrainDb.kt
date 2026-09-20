@@ -45,6 +45,26 @@ class BrainDb(context: Context) : SQLiteOpenHelper(context.applicationContext, D
         // copied verbatim. Migration is still the only place this conversion
         // happens; the runtime compiler remains native-only.
         if (oldVersion < 3) migrateToNativeGraph(db)
+        if (oldVersion < 4) createMissionQueue(db)
+    }
+
+    private fun createMissionQueue(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS mission_queue (" +
+                "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                "mission_id INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE," +
+                "mission_item_id INTEGER NOT NULL REFERENCES mission_items(id) ON DELETE CASCADE," +
+                "position INTEGER NOT NULL DEFAULT 0," +
+                "state TEXT NOT NULL DEFAULT 'queued'," +
+                "run_id INTEGER REFERENCES runs(id)," +
+                "error TEXT NOT NULL DEFAULT ''," +
+                "created_at TEXT NOT NULL DEFAULT (datetime('now'))," +
+                "updated_at TEXT NOT NULL DEFAULT (datetime('now'))" +
+                ")",
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_mission_queue_mission ON mission_queue(mission_id, position)",
+        )
     }
 
     /**
@@ -351,12 +371,14 @@ class BrainDb(context: Context) : SQLiteOpenHelper(context.applicationContext, D
         kind: String,
         content: String,
         payloadJson: String = "{}",
+        state: String = "sent",
     ): Long = writableDatabase.insert("messages", null, ContentValues().apply {
         put("run_id", runId)
         put("role", role)
         put("kind", kind)
         put("content", content)
         put("payload_json", payloadJson)
+        put("state", state)
         put("source", "assistant")
     })
 
@@ -391,6 +413,23 @@ class BrainDb(context: Context) : SQLiteOpenHelper(context.applicationContext, D
     fun setRunSteps(runId: Long, stepsJson: String) {
         exec("UPDATE runs SET steps_json=? WHERE id=?", arrayOf<Any?>(stepsJson, runId))
     }
+
+    fun setRunProgress(runId: Long, progressJson: String) {
+        exec("UPDATE runs SET progress_json=? WHERE id=?", arrayOf<Any?>(progressJson, runId))
+    }
+
+    /**
+     * Recovery query for the Assistant after process/Activity death: the
+     * newest question that still has a live `needs_input` run behind it.
+     */
+    fun latestPendingQuestion(): JSONObject? =
+        rows(
+            "SELECT r.id run_id, r.goal, r.progress_json, " +
+                "m.id message_id, m.content question, m.payload_json " +
+                "FROM runs r JOIN messages m ON m.run_id=r.id " +
+                "WHERE r.state='needs_input' AND m.kind='question' AND m.state='pending' " +
+                "ORDER BY m.id DESC LIMIT 1",
+        ).firstOrNull()
 
     fun insertProposal(
         kind: String,
@@ -593,6 +632,64 @@ class BrainDb(context: Context) : SQLiteOpenHelper(context.applicationContext, D
             arrayOf<Any?>(missionId),
         )
 
+    /** Replace the persisted queue for a mission with its currently enabled items. */
+    fun enqueueMission(missionId: Long): Int {
+        writableDatabase.beginTransaction()
+        try {
+            exec("DELETE FROM mission_queue WHERE mission_id=?", arrayOf<Any?>(missionId))
+            val items = missionItems(missionId).filter { it.optInt("enabled", 1) == 1 }
+            var position = 0
+            for (item in items) {
+                writableDatabase.insert("mission_queue", null, ContentValues().apply {
+                    put("mission_id", missionId)
+                    put("mission_item_id", item.optLong("id"))
+                    put("position", position++)
+                    put("state", "queued")
+                })
+            }
+            writableDatabase.setTransactionSuccessful()
+            return items.size
+        } finally {
+            writableDatabase.endTransaction()
+        }
+    }
+
+    fun missionQueue(missionId: Long): List<JSONObject> =
+        rows(
+            "SELECT q.*, mi.goal, mi.pipeline_id, p.name pipeline_name " +
+                "FROM mission_queue q " +
+                "LEFT JOIN mission_items mi ON mi.id=q.mission_item_id " +
+                "LEFT JOIN pipelines p ON p.id=mi.pipeline_id " +
+                "WHERE q.mission_id=? ORDER BY q.position, q.id",
+            arrayOf<Any?>(missionId),
+        )
+
+    fun setMissionQueueState(queueId: Long, state: String, runId: Long? = null, error: String = "") {
+        exec(
+            "UPDATE mission_queue SET state=?, run_id=COALESCE(?, run_id), error=?, " +
+                "updated_at=datetime('now') WHERE id=?",
+            arrayOf<Any?>(state, runId, error, queueId),
+        )
+    }
+
+    fun clearMissionQueue(missionId: Long) {
+        exec("DELETE FROM mission_queue WHERE mission_id=?", arrayOf<Any?>(missionId))
+    }
+
+    fun setMissionSchedule(missionId: Long, scheduleJson: String) {
+        exec(
+            "UPDATE missions SET schedule_json=?, updated_at=datetime('now') WHERE id=?",
+            arrayOf<Any?>(scheduleJson, missionId),
+        )
+    }
+
+    fun clearMissionSchedule(missionId: Long) {
+        setMissionSchedule(missionId, "{}")
+    }
+
+    fun scheduledMissions(): List<JSONObject> =
+        rows("SELECT id,name,schedule_json FROM missions WHERE schedule_json NOT IN ('', '{}')")
+
     fun deleteMission(missionId: Long) {
         exec("DELETE FROM missions WHERE id=?", arrayOf<Any?>(missionId))
     }
@@ -648,6 +745,6 @@ class BrainDb(context: Context) : SQLiteOpenHelper(context.applicationContext, D
 
     companion object {
         private const val DB_NAME = "brain.db"
-        private const val DB_VERSION = 3
+        private const val DB_VERSION = 4
     }
 }

@@ -164,15 +164,24 @@ This is the concrete version of the flow above, ordered cheapest-first:
    and produce `pipeline.json`; `save_captured_image` for every template.
 5. **Test.** `maa-pipeline-testing` + `benchmark_node` for hit rate, score
    range and latency; add recognize→act→recognize and a final state check.
-6. **Import.** Push `pipeline.json` + templates to
-   `/sdcard/Android/data/com.aliothmoon.maafw.maaphone/files/brain/imports/`,
-   press **Import MaaMCP pipeline.json**, inspect the generated
-   `pipeline_new` proposal and the copied template names.
+6. **Import.** Push `pipeline.json` + templates to `/sdcard/Download/`,
+   press **Import pipeline** in the Assistant and pick the file; inspect the
+   generated `pipeline_new` proposal + candidate `pipeline_versions` row and
+   the copied template names. `Importer` accepts a plain node map or the thin
+   `{pipeline, entry, postcondition}` wrapper documented in
+   `proto/pipelines/README.md`.
 7. **Review.** A human checks aliases, steps, app id and postcondition.
 8. **Replay.** Approve, run the goal deterministically, require a real
    postcondition (like state pink/red), and keep the run/debug evidence.
 9. **Harden.** Re-run from a different start state (already liked / different
    page) and turn failures into healing proposals.
+
+> **First executed pass (2026-09-20):** `proto/pipelines/clock_app_maamcp.json`
+> is the clock-app variant of this flow (OCR/ROI verify, explicit `next` and
+> `on_error`, deterministic OCR postcondition). It was imported, created
+> candidate version #13, Test-replayed as run #52 with `verified=1`, and the
+> same wrapper format is what the future Bilibili pass should use. The
+> TemplateMatch/Bilibili half is still open.
 
 ## 7. Testing and debugging the authoring flow
 

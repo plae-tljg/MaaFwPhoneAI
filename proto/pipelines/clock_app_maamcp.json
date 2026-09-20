@@ -1,0 +1,41 @@
+{
+  "entry": "ClockEntry",
+  "pipeline": {
+    "ClockEntry": {
+      "recognition": "DirectHit",
+      "action": "StartApp",
+      "package": "com.android.deskclock",
+      "post_delay": 1800,
+      "next": ["VerifyClockHome"]
+    },
+    "VerifyClockHome": {
+      "recognition": "OCR",
+      "expected": ["闹钟", "时钟", "计时器", "秒表", "Alarm", "Clock", "Timer"],
+      "roi": [0, 0, 1280, 720],
+      "threshold": 0.3,
+      "action": "DoNothing",
+      "timeout": 3000,
+      "next": ["ClockReady"],
+      "on_error": ["ClockRecovery"]
+    },
+    "ClockReady": {
+      "recognition": "DirectHit",
+      "action": "DoNothing"
+    },
+    "ClockRecovery": {
+      "recognition": "DirectHit",
+      "action": "StartApp",
+      "package": "com.android.deskclock",
+      "post_delay": 1500,
+      "next": ["VerifyClockHome"]
+    }
+  },
+  "postcondition": {
+    "type": "element",
+    "recognition": "OCR",
+    "expected": ["闹钟", "时钟", "计时器", "秒表"],
+    "roi": [0, 0, 1280, 720],
+    "threshold": 0.3,
+    "required_hit": true
+  }
+}

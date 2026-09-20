@@ -20,33 +20,62 @@ object Importer {
         goal: String,
         appId: Long? = null,
     ): Long {
-        val pipeline = runCatching { JSONObject(pipelineJson) }.getOrElse {
+        val root = runCatching { JSONObject(pipelineJson) }.getOrElse {
             throw IllegalArgumentException("pipeline is not a JSON object: ${it.message}")
         }
-        if (pipeline.length() == 0) throw IllegalArgumentException("pipeline is empty")
+        if (root.length() == 0) throw IllegalArgumentException("pipeline is empty")
+        // Plain MaaFW pipeline maps are the canonical import. A thin wrapper
+        // {pipeline:{...}, entry:"...", postcondition:{...}} is also accepted
+        // so an authoring tool can carry a deterministic check without
+        // polluting every node map with framework-external keys.
+        val wrapped = root.optJSONObject("pipeline") != null &&
+            (root.has("postcondition") || root.has("entry"))
+        val pipeline = if (wrapped) root.optJSONObject("pipeline")!! else root
+        val postcondition = if (wrapped) root.optJSONObject("postcondition") ?: JSONObject() else JSONObject()
         PipelineGraph.validate(pipeline)?.let {
             throw IllegalArgumentException("pipeline is not MaaFW-native: $it")
         }
-        val entry = PipelineGraph.deriveEntry(pipeline)
+        val entry = root.optString("entry").takeIf { it.isNotBlank() && pipeline.has(it) }
+            ?: PipelineGraph.deriveEntry(pipeline)
         if (entry.isBlank()) throw IllegalArgumentException("pipeline has no entry node")
 
+        val name = "imported_" + (goal.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_').take(40).ifBlank { "pipeline" })
+        val aliasesJson = JSONArray(listOf(goal)).toString()
+        val pipelineId = db.ensurePipeline(goal, appId, name, source = "maamcp", aliasesJson = aliasesJson)
         val pipelineCandidate = JSONObject()
-            .put("name", "imported_" + (goal.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_').take(40).ifBlank { "pipeline" }))
+            .put("id", pipelineId)
+            .put("name", name)
             .put("goal", goal)
             .put("aliases", JSONArray(listOf(goal)))
             .put("app_id", appId ?: JSONObject.NULL)
             .put("entry", entry)
             .put("graph", pipeline)
-            .put("postcondition", JSONObject())
+            .put("postcondition", postcondition)
         val copied = copyTemplates(db, context, pipelineCandidate)
+        val versionId = db.insertPipelineVersion(
+            pipelineId = pipelineId,
+            definitionJson = pipeline.toString(),
+            entry = entry,
+            postconditionJson = postcondition.toString(),
+            source = "maamcp",
+            evidenceJson = JSONObject().put("imported", true).put("templates", copied).toString(),
+        )
+        pipelineCandidate.put("version_id", versionId)
         val candidate = JSONObject()
             .put("pipeline", pipelineCandidate)
             .put("elements", JSONObject())
             .put("templates", copied)
-        val id = db.insertProposal("pipeline_new", candidate.toString(), null)
+        val id = db.insertProposal(
+            "pipeline_new",
+            candidate.toString(),
+            sourceRunId = null,
+            targetPipelineId = pipelineId,
+            targetVersionId = versionId,
+        )
         db.addMessage(
             null, "assistant", "card",
-            "Imported pipeline proposal #$id ($goal, ${copied.length()} template file(s))",
+            "Imported pipeline proposal #$id ($goal, pipeline=$pipelineId version=$versionId, " +
+                "${copied.length()} template file(s))",
         )
         return id
     }

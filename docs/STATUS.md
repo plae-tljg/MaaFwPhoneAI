@@ -11,11 +11,12 @@ actual logs/hashes.
 > on-device bootstrap logs loaded skill families, fixes numeric/Chinese
 > input and observes screens; it adapts existing pipelines after UI drift.
 > Deterministic recognition postconditions and graph-native Test replay are
-> now proven on-device (proposal #12, run #42, OCR hit `闹钟` 0.998). Agent IO
-> `ask`/`needs_input` and the first Mission UI/runner are implemented too
-> (run #43 mission evidence). The remaining big items are an imported
-> MaaMCP/M9A workflow, replay-K/healing, token accounting and queue/pause
-> semantics; see §2b–§2j and §5.
+> proven on-device (proposal #12 run #42, imported MaaMCP wrapper run #52, OCR
+> hit `闹钟`). Agent IO with recovery, Chat transcript, token accounting and
+> the Mission queue/pause/cancel/in-app-schedule loop are implemented too
+> (runs #43/#45–49). The remaining big items are a Bilibili/TemplateMatch
+> workflow, replay-K/healing and stronger background scheduling; see
+> §2b–§2k and §5.
 
 ## 1. Build artifacts
 
@@ -409,6 +410,39 @@ and `runMissionItem` coverage for imported candidate versions with
 deterministic postconditions. `runs.ai_cost` is now fed from provider usage
 (`usage.total_tokens`, or prompt+completion) and shown in the Runs tab.
 
+## 2k. MaaMCP import, agent recovery and Mission queue (2026-09-20 16:45 HKT)
+
+This closes the five-item follow-up list:
+
+1. **Proposal #12 approved**: Review promoted version #12/pipeline #9 live;
+   mission item #2 ran it in run #45 (`path='pipeline'`,
+   `mission_item_id=2`, `verified=1`, OCR hit `闹钟`).
+2. **MaaMCP + Everything-Maa authoring pass**: `proto/pipelines/`
+   `clock_app_maamcp.json` is a native graph authored with MaaMCP protocol
+   fields and the vendored Everything-Maa guide/generate/testing skills. The
+   importer now accepts a thin wrapper
+   `{pipeline:{...}, entry:"...", postcondition:{...}}`, creates a
+   `pipelines` + candidate `pipeline_versions` row, and keeps the wrapper
+   postcondition as version metadata. Device evidence: plain-map proposal #13
+   → run #44 `verified=1`; wrapper proposal #14 → candidate version #13 →
+   run #52 `verified=1`, linked through `pipeline_version_runs`.
+3. **Import-pipeline button**: Run-tab actions moved to a `FlowRow` with
+   `maxLines=1`; the button is no longer squeezed into one character per row.
+4. **Agent recovery + chat transcript**: question messages are inserted
+   `pending`; `latestPendingQuestion()` reopens the modal after
+   recreation/restart and `AgentRunner.resume()` reconstructs
+   trajectory/history from `runs.steps_json` before continuing. The Chat tab
+   renders a role-aligned transcript with options/state.
+5. **M2 mission queue/schedule MVP**: DB v4 `mission_queue`, Run all,
+   Pause/Resume (between items), Cancel (stops the current MaaFW run),
+   Clear queue, and persisted in-app scheduled run-all. Runs #46/#47
+   (queue) and #48/#49 (schedule) recorded `done` states with
+   `mission_item_id` provenance.
+
+Not claimed: mission execution after the app process is killed (the in-app
+schedule only resumes when the Assistant opens), and exact-alarm background
+mission scheduling. Android unit tests remain `466 tests, 0 failed, 2 skipped`.
+
 ## 3. What is not working / not built
 
 | Gap | Evidence / detail | Next action |
@@ -419,7 +453,7 @@ deterministic postconditions. `runs.ai_cost` is now fed from provider usage
 | On-device postconditions wired but not broadly exercised | Android now checks `pixel`/`element`/`screen_text`/bare MaaFW recognition on replay and Test replay; run #42 verified proposal #12 with a real OCR hit. `file_count` is implemented but has no device scenario yet, and imported pipelines still mostly carry `{}`. | Approve/import a real workflow with a deterministic postcondition and add a camera/file-count scenario; keep unsupported types explicitly skipped. |
 | Bootstrap is still model-driven | `AgentTools` now gets per-frame MaaFW OCR/TemplateMatch/ColorMatch observations, and the OCR models are packaged, but the planner still emits point trajectories and can drift. The coordinate bootstrap stays discovery-only. | Keep native graph authoring as the product path; add the missing repeat guard for model-supplied `tap` points and keep bootstrap proposals Review-gated. |
 | Android token accounting | `DeepSeekClient` accumulates provider usage and `AgentRunner` drains it into `runs.ai_cost`; Runs shows `cost=<n>tok`. Some gateways omit `usage`, which is recorded as 0. | Keep the parser covered by `DeepSeekUsageTest`; add provider-specific usage shape only when a real endpoint needs it. |
-| Version Review mostly done; mission runner MVP done | Review shows goal/entry/nodes/postcondition plus replay evidence; Missions creates/pins/runs items (`runs.path='pipeline'`, device run #43). Persistent question recovery, mission queue/schedule and version diff/history remain. | Add chat-question DB recovery, M2 queue/pause/schedule, and a version diff/history view on top of the evidence inspector. |
+| Version Review + missions + recovery mostly done | Review shows goal/entry/nodes/postcondition/replay evidence; Missions pins/runs items and queues them; recovery reopens unresolved questions. Remaining gaps are an exact-alarm/background mission scheduler and a version diff/history view. | Add a background scheduler service for missions and a diff view in Review. |
 | Actual MaaMCP authoring pass not run | MaaMCP is cloned/mapped and the importer exists, but no real Bilibili (or other) pipeline has been authored, imported and replayed. | Run the MaaMCP + Everything-Maa pass next. |
 | Dynamic-screen replay still unsolved in the prototype | Run #9 replay passed; a later second launch hit a different state (run #10). | Per-step assert/retry/fallback and healing proposals. |
 | Auto-healing not implemented | Failed element recognition does not yet generate `element_fix` proposals with new ROI/template/benchmark evidence. | v0.1 after replay-K gate. |

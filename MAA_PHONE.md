@@ -26,7 +26,7 @@ tests and known issues.
 | **M1** — in-app brain + deterministic pipeline | ✅ proven for `open settings` | DB → resolver → compiler → `RunPlanPayload` → privileged runner; no AIDL change |
 | **M3/M3.2** — Assistant UI + bootstrap AI + pipeline import | ⚠️ built and installed; run #2 actually liked the video but the LLM verifier false-negatived it | Compose Assistant, live preview, Review/Data/Logs/Settings, native importer, Missions tab, agent `ask` modal + `needs_input`; strict final verify is nondeterministic (3 true / 2 false on the same screenshot) |
 | **M2** — tile / notification / float ball / queue / pause | ⏳ not implemented on Android | prototype has the semantics; Android currently submits all steps in one plan |
-| **M4** — on-device promotion/flywheel | ⏳ close | proposal #12 (AI-authored native clock graph) Test-replayed in run #42 with `path='pipeline'`, `verified=1` and a real OCR postcondition; mission runner records run #43 with `mission_item_id`; approval and the imported MaaMCP workflow are still open |
+| **M4** — on-device promotion/flywheel | ✅ first closed loop | proposal #12 approved; imported MaaMCP wrapper version #13 Test-replayed run #52 `verified=1`; approved pipeline ran as mission items #1/#2 with queue runs #46–49 |
 
 The immediate next move is still to author/import a real workflow with
 **MaaMCP + Everything-Maa**, review it and replay it with a deterministic
@@ -250,10 +250,10 @@ Known first checks:
 
 ## 7. Known limitations / next slices
 
-- **No Android step-wise pause/queue**: mission runner executes one item at a
-  time, but `BrainRunner` still sends all compiled steps in one plan; M2 must
-  submit one step per `startRun`, persist `runs.progress_json`, and add the
-  queue/Do-now/schedule surfaces.
+- **Mission queue is item-granular**: the Missions tab has persisted
+  Run-all/Pause/Resume/Cancel and an in-app scheduled run-all; MaaFW still
+  executes a pipeline item as one plan, so pause waits for the current item
+  and there is no exact-alarm background mission scheduler yet.
 - **Postcondition coverage is still thin**: `pixel`/`element`/`screen_text`/
   recognition are wired and verified for proposal #12, and `file_count` is
   implemented, but imported pipelines often ship `postcondition={}` and the
@@ -267,10 +267,11 @@ Known first checks:
 - **Model verification is nondeterministic**: on the same final screenshot
   it returned 3 true / 2 false. Do not use it as the only promotion gate;
   that is the immediate correctness bug (ADR-025).
-- **Agent question recovery is in-memory**: an `ask` question is persisted in
-  `messages`/`runs.state='needs_input'`, but if the Assistant Activity is
-  destroyed the modal does not automatically re-bind on relaunch yet; add a
-  startup recovery path that reads unresolved question rows.
+- **Agent question recovery uses `steps_json` reconstruction**: a pending
+  question is persisted and reopened after relaunch; answering resumes from
+  reconstructed trajectory/history. State that is not serialized (toggle
+  pre-check, repeat counters) is recomputed by the resumed loop, so a resumed
+  bootstrap is slightly less context-rich than the original in-memory run.
 - **Token accounting depends on provider usage**: `AgentRunner` writes
   `runs.ai_cost` from `usage.total_tokens` (or prompt+completion) and the Runs
   tab shows it; gateways that omit `usage` still record 0.

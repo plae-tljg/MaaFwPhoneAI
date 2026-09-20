@@ -76,36 +76,59 @@ class AgentRunner(
         pipelineContext: String = "",
         targetPackage: String = "",
         targetAppId: Long? = null,
+        resumeRunId: Long? = null,
+        resumeStep: Int = 0,
+        resumeTrajectory: List<JSONObject> = emptyList(),
+        resumeHistory: List<String> = emptyList(),
     ): BrainRunner.GoalResult {
         cancelRequested = false
         synchronized(answerLock) { answerDeferred = null }
         _pendingQuestion.value = null
         deepseek.drainUsageTokens()
         if (!configured()) {
+            if (resumeRunId != null) {
+                db.finishRun(resumeRunId, false, "No DeepSeek API key configured.")
+            }
             return BrainRunner.GoalResult("no_key", "No DeepSeek API key configured.")
         }
+        val isResume = resumeRunId != null
         val startedAt = System.currentTimeMillis()
         db.seedHints()
-        val runId = db.startRun(goal, path = "bootstrap")
+        val runId = resumeRunId ?: db.startRun(goal, path = "bootstrap")
+        if (isResume) db.setRunState(runId, "running")
+        db.setRunProgress(
+            runId,
+            JSONObject()
+                .put("proposal_kind", proposalKind)
+                .put("target_pipeline_id", targetPipelineId ?: JSONObject.NULL)
+                .put("evidence_run_id", evidenceRunId ?: JSONObject.NULL)
+                .put("target_package", targetPackage)
+                .put("target_app_id", targetAppId ?: JSONObject.NULL)
+                .toString(),
+        )
         val loadedSkills = SkillLoader.load(context, goal)
         Log.i("BrainSkills", loadedSkills.summary())
-        db.addMessage(runId, "assistant", "status", loadedSkills.summary())
-        if (pipelineContext.isNotBlank()) {
-            db.addMessage(
-                runId, "assistant", "status",
-                "maintenance mode: replay failed; adapting pipeline #${targetPipelineId ?: "?"} from evidence #${evidenceRunId ?: "?"}",
-            )
+        if (!isResume) {
+            db.addMessage(runId, "assistant", "status", loadedSkills.summary())
+            if (pipelineContext.isNotBlank()) {
+                db.addMessage(
+                    runId, "assistant", "status",
+                    "maintenance mode: replay failed; adapting pipeline #${targetPipelineId ?: "?"} from evidence #${evidenceRunId ?: "?"}",
+                )
+            }
         }
         val shotDir = File(context.getExternalFilesDir("brain"), "shots").apply { mkdirs() }
-        val addedApps = runCatching { db.syncInstalledApps() }.getOrDefault(0)
-        if (addedApps > 0) {
-            db.addMessage(
-                runId, "assistant", "status",
-                "app catalog synced: $addedApps launchable app(s) indexed",
-            )
+        if (!isResume) {
+            val addedApps = runCatching { db.syncInstalledApps() }.getOrDefault(0)
+            if (addedApps > 0) {
+                db.addMessage(
+                    runId, "assistant", "status",
+                    "app catalog synced: $addedApps launchable app(s) indexed",
+                )
+            }
         }
-        val trajectory = mutableListOf<JSONObject>()
-        val history = mutableListOf<String>()
+        val trajectory = resumeTrajectory.toMutableList()
+        val history = resumeHistory.toMutableList()
         val knownApps = db.rows("SELECT name,package_name FROM apps WHERE active=1")
             .map { "${it.optString("name")} -> ${it.optString("package_name")}" } +
             db.rows("SELECT key,value FROM settings WHERE key LIKE 'hint:%'")
@@ -123,7 +146,7 @@ class AgentRunner(
         var authoredProposalId: Long? = null
         var success = false
         var error = ""
-        var steps = 0
+        var steps = resumeStep
         val configuredMaxSteps = db.setting("agent_max_steps", "300")
             .toIntOrNull()?.coerceIn(5, 1000) ?: maxSteps
         val earlyExitLimit = db.setting("agent_repeat_limit", "5")
@@ -134,11 +157,13 @@ class AgentRunner(
         var lastObservedFrame = ""
         var lastObservation: JSONObject? = null
         var lastRecognitionObservation = ""
-        db.addMessage(
-            runId, "assistant", "status",
-            "bootstrap budget: max_steps=$configuredMaxSteps, early_exit_streak=$earlyExitLimit",
-        )
-        if (pipelineContext.isNotBlank() && targetPackage.isNotBlank()) {
+        if (!isResume) {
+            db.addMessage(
+                runId, "assistant", "status",
+                "bootstrap budget: max_steps=$configuredMaxSteps, early_exit_streak=$earlyExitLimit",
+            )
+        }
+        if (!isResume && pipelineContext.isNotBlank() && targetPackage.isNotBlank()) {
             val launchAction = JSONObject().put("action", "launch").put("package", targetPackage)
             val launchResult = runCatching {
                 tools.execute(launchAction, 1.0, "brain_maintenance_launch")
@@ -159,7 +184,7 @@ class AgentRunner(
             delay(2500)
         }
 
-        for (step in 0 until configuredMaxSteps) {
+        for (step in resumeStep until configuredMaxSteps) {
             steps = step + 1
             if (cancelRequested) {
                 error = "cancelled by user"
@@ -283,6 +308,7 @@ class AgentRunner(
                             .put("options", JSONArray(optionList))
                             .put("allow_free_text", allowFreeText)
                             .toString(),
+                        state = "pending",
                     )
                     db.setRunState(runId, "needs_input")
                     db.addMessage(runId, "assistant", "status", "waiting for user input: $question")
@@ -749,6 +775,86 @@ class AgentRunner(
             if (authoredProposalId != null) "proposed" else if (success) "done" else "failed",
             message,
         )
+    }
+
+    /**
+     * Resume a bootstrap run whose in-memory coroutine died after an `ask`
+     * question. The trajectory/history are reconstructed from `runs.steps_json`
+     * and the caller has already collected the user's answer.
+     */
+    suspend fun resume(runId: Long, questionMessageId: Long, answer: String): BrainRunner.GoalResult {
+        val answerValue = answer.trim()
+        if (answerValue.isEmpty()) {
+            return BrainRunner.GoalResult("empty_answer", "Answer is empty.")
+        }
+        val run = db.rows(
+            "SELECT goal,state,steps_json,progress_json FROM runs WHERE id=?",
+            arrayOf<Any?>(runId),
+        ).firstOrNull() ?: return BrainRunner.GoalResult("not_found", "Run #$runId not found.")
+        if (run.optString("state") != "needs_input") {
+            return BrainRunner.GoalResult("not_waiting", "Run #$runId is not waiting for input.")
+        }
+        val question = db.rows(
+            "SELECT state FROM messages WHERE id=? AND run_id=? AND kind='question'",
+            arrayOf<Any?>(questionMessageId, runId),
+        ).firstOrNull() ?: return BrainRunner.GoalResult("question_missing", "Question #$questionMessageId not found.")
+        if (question.optString("state") != "pending") {
+            return BrainRunner.GoalResult("already_answered", "Question #$questionMessageId is already ${question.optString("state")}.")
+        }
+        val trajectory = runCatching {
+            JSONArray(run.optString("steps_json", "[]"))
+        }.getOrNull()?.let { array ->
+            (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+        } ?: emptyList()
+        val history = trajectory.map { step ->
+            val action = step.optString("action")
+            val result = step.optString("result")
+            if (result.isBlank()) action else "$action -> $result"
+        }.toMutableList()
+        db.updateMessageState(questionMessageId, "answered", answerValue)
+        db.addMessage(
+            runId,
+            "user",
+            "answer",
+            answerValue,
+            JSONObject().put("question_message_id", questionMessageId).toString(),
+        )
+        val answerEntry = JSONObject()
+            .put("action", "answer")
+            .put("value", answerValue)
+            .put("question_message_id", questionMessageId)
+        val trajectoryPlus = trajectory + answerEntry
+        history += "user answer -> $answerValue"
+        val progress = run.optString("progress_json")
+            .takeIf { it.isNotBlank() && it != "null" }
+            ?.let { raw -> runCatching { JSONObject(raw) }.getOrNull() }
+            ?: JSONObject()
+        fun progressLong(key: String): Long? =
+            progress.opt(key)?.takeIf { it != JSONObject.NULL }?.toString()?.toLongOrNull()
+
+        return run(
+            goal = run.optString("goal").ifBlank { "resumed run #$runId" },
+            proposalKind = progress.optString("proposal_kind").ifBlank { "pipeline_new" },
+            targetPipelineId = progressLong("target_pipeline_id"),
+            evidenceRunId = progressLong("evidence_run_id"),
+            pipelineContext = progress.optString("pipeline_context"),
+            targetPackage = progress.optString("target_package"),
+            targetAppId = progressLong("target_app_id"),
+            resumeRunId = runId,
+            resumeStep = trajectoryPlus.size,
+            resumeTrajectory = trajectoryPlus,
+            resumeHistory = history,
+        )
+    }
+
+    /** Cancel a recovered `needs_input` run that the user chose not to continue. */
+    fun cancelPendingRun(runId: Long) {
+        db.setRunState(runId, "cancelled")
+        db.rows(
+            "SELECT id FROM messages WHERE run_id=? AND kind='question' AND state='pending'",
+            arrayOf<Any?>(runId),
+        ).forEach { db.updateMessageState(it.getLong("id"), "dismissed") }
+        db.addMessage(runId, "assistant", "result", "Cancelled: user dismissed the recovered question")
     }
 
     private fun extractSearchQuery(goal: String): String? {

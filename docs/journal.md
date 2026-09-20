@@ -188,3 +188,30 @@ mission 队列/定时、带确定性 postcondition 的 imported candidate 跑 mi
 `usage.total_tokens`（没有则 prompt+completion），`AgentRunner` 在
 `finishRun` 时 drain 到 `runs.ai_cost`，Runs 页显示 `cost=<n>tok`；新增
 `DeepSeekUsageTest` 覆盖两种 usage 形状。Android 单测变为 466。
+
+## 9. 收尾五件事（2026-09-20 傍晚）
+
+1. **修 Import pipeline 的 UI**：Run tab 的按钮行改成 `FlowRow`，每个
+   `Text` 加 `maxLines=1`；uiautomator 里 “Import pipeline” 独占一行，不再
+   一个字一行。
+2. **MaaMCP + Everything-Maa authoring pass**：按 MaaMCP Pipeline 协议和
+   vendored Everything-Maa guide/generate/testing 写了
+   `proto/pipelines/clock_app_maamcp.json`。`Importer` 现在支持薄包装
+   `{pipeline, entry, postcondition}`，并创建 `pipelines` + candidate
+   `pipeline_versions`。真机证据：plain map proposal #13 → run #44
+   `verified=1`；wrapper proposal #14 → version #13 → run #52 `verified=1`，
+   `pipeline_version_runs` 也有 replay 记录。
+3. **Approve #12 + mission replay**：Review 批准 version #12；mission item
+   #2 跑 run #45，`path='pipeline'`, `mission_item_id=2`, `verified=1`。
+4. **Question recovery + chat transcript**：question message 现在以
+   `pending` 插入；`latestPendingQuestion()` 重启后重新弹出 modal；
+   `AgentRunner.resume()` 从 `runs.steps_json` 重建 trajectory/history 继续
+   原 run；Chat tab 按 role 气泡化显示，question/answer/options/state 都在。
+5. **M2 mission queue/schedule MVP**：DB v4 增加 `mission_queue`；Run all /
+   Pause / Resume / Cancel / Clear / in-app schedule 都可用。证据：queue
+   运行 #46/#47，scheduled 运行 #48/#49。Cancel 会 stop 当前 MaaFW item；
+   Pause 只保证 item 之间生效。
+
+清理：为真机测试临时加的 debug extra、debug-only exported manifest 和
+debugSeedQuestion/debugImport 已全部删除；产品 AssistantActivity 仍然
+`exported=false`。Android 单测 466/466。

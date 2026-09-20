@@ -135,6 +135,23 @@ CREATE TABLE IF NOT EXISTS mission_items (
   updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Durable mission queue. `state` is queued|running|paused|done|failed|cancelled;
+-- the runner synchronizes it with runs.mission_item_id so queue execution
+-- survives Activity recreation and can be inspected in the Data/Review UI.
+CREATE TABLE IF NOT EXISTS mission_queue (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  mission_id     INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+  mission_item_id INTEGER NOT NULL REFERENCES mission_items(id) ON DELETE CASCADE,
+  position       INTEGER NOT NULL DEFAULT 0,
+  state          TEXT NOT NULL DEFAULT 'queued',
+  run_id         INTEGER REFERENCES runs(id),
+  error          TEXT NOT NULL DEFAULT '',
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_mission_queue_mission ON mission_queue(mission_id, position);
+
 -- One execution record. Pipeline runs link to pipeline/version; bootstrap AI
 -- runs record the trajectory that can later be consolidated into a candidate
 -- pipeline version. `steps_json` here is the run trajectory/evidence, not a
