@@ -45,7 +45,7 @@ fun MaaPreviewSurface(
     resolution: DisplayResolution,
     onSurfaceCreated: () -> Unit,
     onSurfaceAvailable: (Surface) -> Unit,
-    onSurfaceDestroyed: () -> Unit,
+    onSurfaceDestroyed: (Surface?) -> Unit,
     modifier: Modifier = Modifier,
     overlay: @Composable () -> Unit = {},
 ) {
@@ -103,7 +103,10 @@ fun MaaPreviewSurface(
 
                             override fun surfaceDestroyed(holder: SurfaceHolder) {
                                 destroyed = true
-                                currentDestroyed()
+                                // Keep the identity even though the Surface is
+                                // no longer valid: the port uses it to ignore a
+                                // delayed destroy after a newer Surface attached.
+                                currentDestroyed(holder.surface)
                             }
                         })
                     }

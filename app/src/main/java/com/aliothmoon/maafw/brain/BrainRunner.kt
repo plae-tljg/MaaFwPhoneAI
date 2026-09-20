@@ -62,6 +62,30 @@ class BrainRunner(
     }
 
     /**
+     * Run one exact stored pipeline row from the library. Unlike [runGoal],
+     * this never resolves by goal text: the human picked the row, so replay
+     * that graph and its deterministic postcondition directly.
+     */
+    suspend fun runPipeline(pipelineId: Long, versionId: Long? = null): GoalResult {
+        val pipeline = loadPipelineForRun(pipelineId, versionId)
+        if (pipeline == null) {
+            val startedAt = System.currentTimeMillis()
+            val runId = db.startRun("pipeline #$pipelineId", path = "pipeline")
+            db.exec("UPDATE runs SET pipeline_id=? WHERE id=?", arrayOf<Any?>(pipelineId, runId))
+            val message = "Pipeline #$pipelineId not found" +
+                if (versionId != null) " version #$versionId" else ""
+            db.finishRun(runId, false, message, System.currentTimeMillis() - startedAt)
+            return GoalResult("pipeline_missing", message, runId = runId, pipelineId = pipelineId)
+        }
+        return executePipeline(
+            goal = pipeline.goal,
+            pipeline = pipeline,
+            score = 100,
+            pipelineVersionId = versionId,
+        )
+    }
+
+    /**
      * Authoritative pipeline runner used by resolver hits and mission items.
      * It owns exactly one `runs` row and keeps the mission/pipeline/version
      * provenance columns in sync before any MaaFW task starts.

@@ -117,6 +117,7 @@ import com.aliothmoon.maafw.ui.logs.LogExportController
 import com.aliothmoon.maafw.ui.logs.RunLogArchiveScreen
 import com.aliothmoon.maafw.ui.logs.RunLogDetailScreen
 import com.aliothmoon.maafw.brain.AssistantActivity
+import com.aliothmoon.maafw.brain.BrainPipelineCatalog
 import com.aliothmoon.maafw.ui.navigation.Routes
 import com.aliothmoon.maafw.ui.pip.LocalIsInPip
 import com.aliothmoon.maafw.ui.notification.NotificationSettingsScreen
@@ -181,6 +182,7 @@ fun AppRoot(
     settingsViewModel: SettingsViewModel = koinViewModel(),
     overlayController: OverlayController = koinInject(),
     screenSaverManager: ScreenSaverOverlayManager = koinInject(),
+    brainCatalog: BrainPipelineCatalog = koinInject(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val scheduleState by scheduleViewModel.uiState.collectAsStateWithLifecycle()
@@ -218,12 +220,12 @@ fun AppRoot(
             markers = { previewMarkersState.value },
             // 不等 setFixedSize 那一轮：搬一次家要 50ms+ 才对上尺寸，期间遮罩会盖住刚回来的画面
             onSurfaceCreated = { previewSurfaceReady = true },
-            onSurfaceAvailable = {
-                viewModel.onIntent(SessionIntent.AttachPreviewSurface(it))
+            onSurfaceAvailable = { surface, owner ->
+                viewModel.onIntent(SessionIntent.AttachPreviewSurface(surface, owner))
             },
-            onSurfaceDestroyed = {
+            onSurfaceDestroyed = { surface, owner ->
                 previewSurfaceReady = false
-                viewModel.onIntent(SessionIntent.DetachPreviewSurface)
+                viewModel.onIntent(SessionIntent.DetachPreviewSurface(surface, owner))
             },
         )
     }
@@ -253,6 +255,15 @@ fun AppRoot(
         var exportSheetVisible by remember { mutableStateOf(false) }
 
         val context = LocalContext.current
+        val openAssistant: (String?) -> Unit = { requestedTab ->
+            context.startActivity(
+                Intent(context, AssistantActivity::class.java).apply {
+                    if (!requestedTab.isNullOrBlank()) {
+                        putExtra(AssistantActivity.EXTRA_TAB, requestedTab)
+                    }
+                },
+            )
+        }
         // 悬浮窗面板的「导出」：先把应用拉到前面，再由这条流打开 Activity 里的导出 sheet
         LaunchedEffect(overlayController) {
             overlayController.exportLogRequests.collect { exportSheetVisible = true }
@@ -303,6 +314,9 @@ fun AppRoot(
             val observer = LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) {
                     scheduleViewModel.onIntent(ScheduleIntent.RefreshExactAlarmPermission)
+                    // Approval happens in the Assistant Activity; refresh on the
+                    // way back so Tasks/Add-tasks sees the new live pipeline.
+                    scope.launch { brainCatalog.refresh() }
                 }
             }
             scheduleLifecycleOwner.lifecycle.addObserver(observer)
@@ -450,6 +464,8 @@ fun AppRoot(
                         onIntent = viewModel::onIntent,
                         update = settingsState.update,
                         onSettingsIntent = settingsViewModel::onIntent,
+                        onOpenPipelines = { openAssistant(AssistantActivity.TAB_PIPELINES) },
+                        onOpenAssistant = { openAssistant(null) },
                         modifier = Modifier.fillMaxSize(),
                     )
                     TopDestination.Tasks -> TasksScreen(
@@ -463,6 +479,9 @@ fun AppRoot(
                         runLog = { runLogState.value },
                         onEnterFullscreen = { previewFullscreen = true },
                         onExportLogs = { exportSheetVisible = true },
+                        onOpenPipelineLibrary = {
+                            openAssistant(AssistantActivity.TAB_PIPELINES)
+                        },
                         onIntent = viewModel::onIntent,
                         modifier = Modifier.fillMaxSize(),
                     )
@@ -487,9 +506,7 @@ fun AppRoot(
                         onOpenAppLog = { navController.navigate(Routes.APP_LOG) },
                         onOpenNotificationSettings = { navController.navigate(Routes.NOTIFICATION_SETTINGS) },
                         onExportLogs = { exportSheetVisible = true },
-                        onOpenAssistant = {
-                            context.startActivity(Intent(context, AssistantActivity::class.java))
-                        },
+                        onOpenAssistant = { openAssistant(null) },
                         modifier = Modifier.fillMaxSize(),
                     )
                 }

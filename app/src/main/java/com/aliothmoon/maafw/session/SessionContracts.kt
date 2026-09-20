@@ -305,8 +305,8 @@ sealed interface SessionIntent {
      * 预览 Surface 的生死；Surface 归 UI 所有，VM 只转发句柄
      * 尺寸对不上虚拟屏时不要发：特权进程按 Surface 尺寸贴图，对不上就是拉伸的画面
      */
-    data class AttachPreviewSurface(val surface: Surface) : SessionIntent
-    data object DetachPreviewSurface : SessionIntent
+    data class AttachPreviewSurface(val surface: Surface, val owner: Any) : SessionIntent
+    data class DetachPreviewSurface(val surface: Surface?, val owner: Any) : SessionIntent
 
     /**
      * 用户在全屏预览上的手动操作；坐标由 UI 换算到虚拟屏坐标系后传入

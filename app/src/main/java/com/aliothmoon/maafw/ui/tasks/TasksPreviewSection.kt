@@ -83,8 +83,8 @@ internal fun rememberMovablePreview(
     /** 传取值而不是值：一次滑动几十个触点，在 AppRoot 那层读会把整棵树按触摸频率重组 */
     markers: () -> List<PreviewTouchMarker>,
     onSurfaceCreated: () -> Unit,
-    onSurfaceAvailable: (PlatformSurface) -> Unit,
-    onSurfaceDestroyed: () -> Unit,
+    onSurfaceAvailable: (PlatformSurface, Any) -> Unit,
+    onSurfaceDestroyed: (PlatformSurface?, Any) -> Unit,
 ): @Composable () -> Unit {
     val currentResolution by rememberUpdatedState(resolution)
     val currentMarkers by rememberUpdatedState(markers)
@@ -92,6 +92,10 @@ internal fun rememberMovablePreview(
     val currentAvailable by rememberUpdatedState(onSurfaceAvailable)
     val currentDestroyed by rememberUpdatedState(onSurfaceDestroyed)
     var lastSentSurface by remember { mutableStateOf<PlatformSurface?>(null) }
+    // One token per host call site. It survives the movableContent move, so
+    // the same host can re-attach after a Surface recreation while a stale
+    // destroy from another Activity is rejected by the PreviewPort.
+    val surfaceOwner = remember { Any() }
     return remember {
         movableContentOf {
             MaaPreviewSurface(
@@ -101,12 +105,12 @@ internal fun rememberMovablePreview(
                     // surfaceChanged 会重复触发，同一个 Surface 不重复跨进程上报
                     if (lastSentSurface != surface) {
                         lastSentSurface = surface
-                        currentAvailable(surface)
+                        currentAvailable(surface, surfaceOwner)
                     }
                 },
-                onSurfaceDestroyed = {
+                onSurfaceDestroyed = { surface ->
                     lastSentSurface = null
-                    currentDestroyed()
+                    currentDestroyed(surface, surfaceOwner)
                 },
                 modifier = Modifier.fillMaxSize(),
             ) {

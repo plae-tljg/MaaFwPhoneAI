@@ -1,4 +1,4 @@
-# Maa-phone Android fork
+# MaaFwPhoneAI Android fork
 
 This is the **MaaFwApp fork** that hosts the on-device brain and Assistant.
 Upstream MaaFwApp usage/build docs remain valid (see `README.md` and
@@ -7,7 +7,7 @@ tests and known issues.
 
 - Reference checkout: `../../00ref/MaaFwApp` (pin `70cd377`)
 - Fork source: this directory (AGPL-3.0)
-- Package: `com.aliothmoon.maafw.maaphone`, label **Maa-phone**
+- Package: `com.aliothmoon.maafw.maaphone`, label **MaaFwPhoneAI**
 - Latest source APK: `dist/maa-phone-v1-debug.apk` (sha256
   `b565cf5f7ca99e159d7fc242abd35732cee73f7a2bfe56ce3df690c92eeae9e8`);
   install over existing v1; a pre-v1 (`skills`) install must be removed
@@ -27,6 +27,9 @@ tests and known issues.
 | **M3/M3.2** — Assistant UI + bootstrap AI + pipeline import | ⚠️ built and installed; run #2 actually liked the video but the LLM verifier false-negatived it | Compose Assistant, live preview, Review/Data/Logs/Settings, native importer, Missions tab, agent `ask` modal + `needs_input`; strict final verify is nondeterministic (3 true / 2 false on the same screenshot) |
 | **M2** — tile / notification / float ball / queue / pause | ⏳ not implemented on Android | prototype has the semantics; Android currently submits all steps in one plan |
 | **M4** — on-device promotion/flywheel | ✅ first closed loop | proposal #12 approved; imported MaaMCP wrapper version #13 Test-replayed run #52 `verified=1`; approved pipeline ran as mission items #1/#2 with queue runs #46–49 |
+| **M5** — approved pipeline library | ✅ source + signed release installed over existing DB | Assistant **Pipelines** tab lists live rows with `Run replay`/`Add to mission`; Home **管线库** and Tasks **AI 管线库** entries; Review `Approve & open`; existing `pipelines #2` (`live`/`approved`) visible, mission #1 created from it, direct replay wrote run evidence |
+| **M5.1** — preview ownership fix | ✅ source + signed release installed | Tasks/Assistant share one `PreviewPort`; host tokens prevent the outgoing Activity's late `surfaceDestroyed` from clearing the incoming preview Surface. Device-verified: stale detach ignored, live cell matched the file-backed screenshot during an AI run |
+| **M5.2** — learned pipelines in the PI task catalog | ✅ source + signed release installed | `BrainProjectRepository` projects live brain pipelines as synthetic `brain_pipeline_<id>` tasks under **AI Pipelines** in Add tasks and appends the learned OCR/template bundle paths. Device-verified: group and row visible, a config Start ran the stored MaaFW graph without an AI planning request |
 
 The immediate next move is still to author/import a real workflow with
 **MaaMCP + Everything-Maa**, review it and replay it with a deterministic
@@ -112,7 +115,7 @@ The Assistant's Settings tab (`deepseek_api_key`, `deepseek_base`,
 | `Learner.kt` | trajectory → proposal; approve/reject publishing |
 | `BrainResources.kt` | versioned resource dir (`files/pi/brain/res_N/image/`) and paths |
 | `SkillLoader.kt` | reads `assets/maa-skills/index.json`, selects one family, loads only that family's `SKILL.md`, logs the loaded family/skills and passes guidance to the model |
-| `AssistantActivity.kt` | Compose UI: Run/Assistant, Runs, Review, Data, Logs, Settings; live virtual-display preview + latest AI screenshot |
+| `AssistantActivity.kt` | Compose UI: Run/Assistant, Chat, Runs, Pipelines, Missions, Review, Data, Settings; live virtual-display preview + latest AI screenshot |
 
 Native/Java input bridge fix (this build):
 
@@ -132,11 +135,11 @@ packaging fixes and the added brain.
 1. Install the latest APK from `/sdcard/Download/` or
    `adb install -r dist/maa-phone-m3.2-debug.apk` (MIUI blocks adb installs
    unless **Install via USB** is enabled; otherwise install from Files).
-2. Open **Maa-phone** once and grant notification/battery/overlay prompts.
-3. Start **Shizuku** and authorize Maa-phone; choose Shizuku/root until the
+2. Open **MaaFwPhoneAI** once and grant notification/battery/overlay prompts.
+3. Start **Shizuku** and authorize MaaFwPhoneAI; choose Shizuku/root until the
    runner connects.
 4. Two launcher icons exist:
-   - **Maa-phone** — stock PI library (demo tasks `Demo: open Settings`,
+   - **MaaFwPhoneAI** — stock PI library (demo tasks `Demo: open Settings`,
      `Demo: open Camera`);
    - **Assistant** — the brain (goal input, runs, review, import).
    Most test confusion comes from running the brain flow from the wrong
@@ -145,7 +148,9 @@ packaging fixes and the added brain.
 ### 5.2 Deterministic M1 path (should work)
 
 1. Open **Assistant**.
-2. Press **Run demo: open settings** (or type `open settings`).
+2. Press **Run demo: open settings** (or type `open settings`). After a
+   pipeline is approved in Review, open the **Pipelines** tab (or Home →
+   **管线库**) and press **Run replay**; no mission is required first.
 3. Expected: `Skill 'open_settings' (score 100) completed: 1 step(s)` and a
    green row in Runs. In foreground mode Settings opens on the main screen;
    in background mode it opens on the 1280×720 virtual display (the main
@@ -239,7 +244,7 @@ adb shell 'ls -lt /sdcard/Android/data/com.aliothmoon.maafw.maaphone/files/brain
 
 Known first checks:
 
-- Wrong icon? (Maa-phone vs Assistant).
+- Wrong icon? (MaaFwPhoneAI vs Assistant).
 - `NOT_RUN`/`MAA_LOAD_FAIL`? Check native library hashes/strip fix.
 - Settings invisible? Probably background mode; use foreground or preview.
 - `Skill … completed with failures`? Check `maafw.log` for

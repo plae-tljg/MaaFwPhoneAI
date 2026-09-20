@@ -13,11 +13,11 @@ class RecordingPreviewPort : PreviewPort {
     var detachCount: Int = 0
         private set
 
-    override fun attachSurface(surface: Surface) {
+    override fun attachSurface(surface: Surface, owner: Any) {
         attachCount++
     }
 
-    override fun detachSurface() {
+    override fun detachSurface(surface: Surface?, owner: Any) {
         detachCount++
     }
 

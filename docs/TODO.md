@@ -116,6 +116,25 @@ place. The previous `maa-phone-v1-debug.apk` hash is obsolete.
   `{"vision_verified":false,"proposed_from_failed_verification":true}` so
   Review/Test replay can decide. Proposal conversion failures are caught and
   surfaced in run status instead of silently dropping the trajectory.
+- **Approved pipeline became invisible after Review**: the row was live in
+  `pipelines`, but the only surface listing it was the "Add item" card inside
+  an already-open mission, and the device had no missions. The Assistant now
+  has a **Pipelines** tab with `Run replay` and `Add to mission`, Review
+  approval lands there (`Approve & open`), Missions points at it, and the
+  Home screen has a **管线库** entry. Device-tested against the existing DB.
+- **Live preview black after Activity hand-off**: Tasks and Assistant share
+  one preview port; the outgoing Activity's late `surfaceDestroyed` cleared
+  the incoming host's Surface, so the live cell went black while the
+  file-backed `latestShot` cell stayed correct. Preview surfaces now carry a
+  per-host owner token and stale destroys are ignored. Device-verified with
+  logcat (`attach -> stale detach ignored`) and equal live/file content during
+  an AI run.
+- **Learned pipeline in the original Tasks config**: `BrainProjectRepository`
+  projects every live brain pipeline into the loaded PI definition as a
+  synthetic task (`brain_pipeline_<id>`) under an **AI Pipelines** group and
+  extends the active resource with the learned template/OCR paths. Add tasks
+  in the main MaaFwApp Tasks tab now lists the AI pipeline; Start runs the
+  stored MaaFW graph, not the AI prompt loop.
 - **Official DeepSeek model default**: if no explicit model setting and the
   base URL is `api.deepseek.com`, use `deepseek-chat` instead of the custom
   gateway name `deepseek-v4-flash`; Settings carries a hint. This avoids an
@@ -169,6 +188,8 @@ place. The previous `maa-phone-v1-debug.apk` hash is obsolete.
 | P0-4 | Deterministic postcondition for approved pipelines | First-time AI may use the LLM verifier; after approval a pipeline replay must use `pixel`/`element`/`file_count`/`screen_text`/Custom. | ✅ recognition-style (`element`/`screen_text`/bare MaaFW map) wired and device-verified by run #42; `pixel` and `file_count` wired, file_count still needs a device scenario test. |
 | P0-5 | Mission UI + runner | Create missions, add pipeline/version items, run an item into `runs(path='pipeline')`; failures become evidence. | ✅ done through M2 MVP: create/pin/enable/delete, single-item and queued runs, pause/cancel, persisted queue and in-app schedule (runs #43/#45–49). Android alarm-independent background scheduling is not claimed. |
 | P0-6 | Graph-native execution | Execute stored `next`/`on_error`/anchors as a graph; stop flattening/renaming nodes. | ✅ compiler/runner graph-native and conditional AI-authored graph #12 Test replay verified (run #42); a tested externally imported M9A/Bilibili graph is still pending. |
+| P0-7 | Published pipeline library | After Review approval, the live pipeline must be findable and runnable again without creating a mission first. | ✅ done: Assistant **Pipelines** tab (`BrainDb.pipelineLibrary()` + `BrainRunner.runPipeline`), `Approve & open`, Add-to-mission dialog, Missions empty-state link, Home **管线库** and Tasks **AI 管线库** entries; device-tested on the existing v1 DB. |
+| P0-8 | Learned pipeline in original task config | The main MaaFwApp Tasks -> Add tasks sheet must list approved AI pipelines and Start must execute the stored MaaFW graph, not the AI loop. | ✅ done: `BrainPipelineCatalog` + `BrainProjectRepository` synthetic `brain_pipeline_<id>` tasks under **AI Pipelines**, brain resource paths appended; device-verified in the Tasks add-task sheet and via a normal config Start. |
 
 ## 2. P1 — bootstrap reliability and AI maintenance
 
@@ -218,8 +239,9 @@ place. The previous `maa-phone-v1-debug.apk` hash is obsolete.
 
 1. On a clean v1 install, the UI keyboard does not hide the goal field.
 2. `key home` in background mode does not disturb the main screen.
-3. Review UI can approve candidate versions; an approved pipeline replays
-   with `path='pipeline'` and a deterministic postcondition.
+3. Review UI can approve candidate versions; an approved pipeline appears in
+   the pipeline library, replays with `path='pipeline'` and a deterministic
+   postcondition.
 4. Mission UI can add that pipeline and run it from the mission list.
 5. The maintenance AI can read the resulting rows and explain/propose a fix
    for one failed run.

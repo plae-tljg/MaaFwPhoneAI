@@ -501,6 +501,108 @@ app-side path could be measured without provider latency:
   6.8 s; run #5 verifier-failed but proposal #3 was created with
   `proposed_from_failed_verification=true`.
 
+## 2n. Approved-pipeline library (2026-09-20 19:45 HKT)
+
+The user report was: approve a Bilibili candidate in Review, then the
+pipeline cannot be found again in the main Tasks tab (two stock demo tasks)
+or in Assistant -> Missions.
+
+Device DB/UI inspection confirmed the data path already worked but the
+product surface did not:
+
+- DB: `pipelines #2` existed with `status='live'`, `entry=brain_step_0`,
+  source bootstrap; `pipeline_versions #1` was `approved` with
+  `vision_verified=false` source run #1; `proposals #1` was `approved`.
+- There were **zero rows in `missions`**. The old Assistant Missions tab only
+  listed live pipelines inside a mission's "Add item" card, so with no
+  mission the approved row was invisible. The stock Tasks tab renders the PI
+  resource library (the two demo tasks), which is intentionally separate
+  from the brain DB.
+
+Fix:
+
+- New Assistant **Pipelines** tab (`BrainDb.pipelineLibrary()`): lists every
+  live/draft/broken `pipelines` row with current approved version, node
+  count, app, source, postcondition state and newest `runs` evidence.
+- `BrainRunner.runPipeline(pipelineId, versionId)` runs the exact selected
+  row/version with `path='pipeline'`, bypassing alias resolution; the row's
+  approved version id is linked into `runs.pipeline_version_id` when present.
+- Each card can **Run replay** or **Add to mission**; when no mission exists
+  the dialog can create one and immediately open it.
+- Review's pending card action is now **Approve & open**: on successful
+  approval the UI switches to the Pipelines tab so the published row is
+  visible immediately; approved cards also expose **Open in pipeline
+  library**.
+- Missions has a "Run one pipeline now" card pointing at the library; the
+  main app Home screen has a **MaaFwPhoneAI Brain** card with **管线库** /
+  **Open Assistant** entries and the Tasks tab has an **AI 管线库** action
+  (Assistant receives `EXTRA_TAB`).
+
+Device evidence after installing the signed release over the existing
+device DB (data preserved): the library showed `#2 ... · live` with *Run replay* /
+*Add to mission* and `#1 open_settings · live`; "Create mission & add" made
+mission #1 and opened it with the pipeline pinned; tapping *Run replay* on
+#2 wrote run #2 (`path='pipeline'`, `pipeline_version_id` linked) and the
+card showed the resulting failure evidence instead of hiding the outcome.
+
+## 2o. Cross-Activity preview-surface ownership (2026-09-20 20:25 HKT)
+
+The "first cell black, second cell still shows the last screenshot" bug came
+back after normal MainActivity -> Assistant navigation. The Assistant table
+was not broken; the shared preview monitor pointer was being cleared by the
+outgoing Activity:
+
+- `AppRoot` (Tasks tab) and the Assistant both host one `MaaPreviewSurface`
+  and share the Koin `RemotePreviewPort` singleton.
+- Opening Assistant creates/attaches its Surface (Assistant owner) at
+  `20:13:11.438`; MainActivity's window then reports `surfaceDestroyed` at
+  `20:13:11.860`. The old `detachSurface()` had no owner, so it cleared the
+  newly attached Assistant Surface; native preview then had no monitor
+  window while `latestShot`\/Run evidence still read the last PNG from disk.
+  Logcat captured exactly this `attach` -> stale `detach` order.
+
+Fix: `rememberMovablePreview` now creates one stable ownership token per
+host and passes it through `SessionIntent.AttachPreviewSurface`\/
+`DetachPreviewSurface` to `PreviewPort`. `RemotePreviewPort` stores an
+`ActiveSurface(owner, surface)` and `detachSurface(surface, owner)` ignores a
+destroy callback from any owner that is not current and any stale Surface
+identity from the same host. Re-attaching from the returned
+Activity still replaces the monitor normally, and service reconnect still
+re-pushes the stored Surface. With diagnostics installed, the stale detach
+was logged as ignored, and during an AI run the live cell rendered the same
+frame as the file-backed screenshot cell. Android unit tests remain
+`466 passed, 0 failed, 2 skipped`.
+
+## 2p. Learned pipelines in the MaaFwApp task catalog (2026-09-20 20:50 HKT)
+
+Approving a pipeline in the Assistant was still not enough for the original
+Tasks flow: the config/add-task sheet only listed PI tasks, so an approved
+pipeline could not be pinned to a normal MaaFwApp run configuration.
+
+`BrainProjectRepository` now decorates the loaded PI definition with a
+synthetic task per `pipelines.status='live'` row:
+
+- `BrainPipelineCatalog` reads live `definition_json`/`entry` rows, validates
+the flat MaaFW graph and exposes a refreshable snapshot; `AndroidManifest`
+flow is unchanged.
+- the decorator appends `TaskDefinition(name="brain_pipeline_<id>")` with the
+  stored graph as `pipelineOverride`, adds a visible **AI Pipelines** task
+  group, and appends the brain resource bundle paths (`brain_ocr`,
+  `brain/res_N`) to the active PI resource so TemplateMatch/OCR nodes find
+  their learned files.
+- `RunLauncher` / `RunPlanBuilder` therefore execute the learned graph through
+  the same MaaFW runner as PI tasks: `path` is a normal config task, no AI
+  fallback and no extra Kotlin branch per pipeline.
+- the catalog refreshes from `AppRoot` whenever MainActivity resumes, so
+  approving in the Assistant and returning to Tasks shows the new row. It also
+  refreshes on repository reload and at process start.
+
+Device evidence: the Tasks -> **Add tasks** sheet now shows the **AI Pipelines**
+group containing `brain_open_bilibili__search_for_miku_` and
+`open_settings`; adding it to an empty config and pressing **Start** runs the
+stored graph through the privileged MaaFW runner (`启动`/`running` state,
+Bilibili target on the virtual display) with no AI planning request.
+
 ## 3. What is not working / not built
 
 | Gap | Evidence / detail | Next action |

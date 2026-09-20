@@ -92,6 +92,7 @@ class AssistantActivity : ComponentActivity() {
     private lateinit var agent: AgentRunner
     private var pendingGoal by mutableStateOf<String?>(null)
     private var pendingMaintain by mutableStateOf(false)
+    private var requestedTab by mutableStateOf<AssistantTab?>(null)
 
     /** Queue work outlives individual Composables; Activity destruction cancels it. */
     private val brainScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -172,7 +173,7 @@ class AssistantActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        db = BrainDb(this)
+        db = GlobalContext.get().get<BrainDb>()
         runnerPort = GlobalContext.get().get<RunnerPort>()
         val servicePort = GlobalContext.get().get<PrivilegedServicePort>()
         val permissionGateway = GlobalContext.get().get<PermissionGateway>()
@@ -182,6 +183,11 @@ class AssistantActivity : ComponentActivity() {
         brain = BrainRunner(this, db, runnerPort, servicePort) { goal -> agent.run(goal) }
         pendingGoal = intent?.getStringExtra(EXTRA_GOAL)
         pendingMaintain = intent?.getBooleanExtra(EXTRA_MAINTAIN, false) ?: false
+        // A configuration change replays onCreate with the same Intent; only a
+        // fresh launch should honor the requested tab, not an orientation flip.
+        if (savedInstanceState == null) {
+            requestedTab = assistantTabFrom(intent?.getStringExtra(EXTRA_TAB))
+        }
         restoreMissionSchedules()
         setContent {
             MaaFwTheme {
@@ -195,6 +201,11 @@ class AssistantActivity : ComponentActivity() {
                     permissionGateway = permissionGateway,
                     pendingGoal = pendingGoal,
                     pendingMaintain = pendingMaintain,
+                    requestedTab = requestedTab,
+                    onRequestedTabConsumed = {
+                        requestedTab = null
+                        intent?.removeExtra(EXTRA_TAB)
+                    },
                     onGoalConsumed = { pendingGoal = null; pendingMaintain = false },
                     onStop = {
                         agent.requestCancel()
@@ -217,11 +228,16 @@ class AssistantActivity : ComponentActivity() {
         setIntent(intent)
         pendingGoal = intent.getStringExtra(EXTRA_GOAL)
         pendingMaintain = intent.getBooleanExtra(EXTRA_MAINTAIN, false)
+        requestedTab = assistantTabFrom(intent.getStringExtra(EXTRA_TAB))
     }
 
     companion object {
         const val EXTRA_GOAL = "goal"
         const val EXTRA_MAINTAIN = "maintain"
+        const val EXTRA_TAB = "tab"
+        const val TAB_ASSISTANT = "ASSISTANT"
+        const val TAB_PIPELINES = "PIPELINES"
+        const val TAB_MISSIONS = "MISSIONS"
     }
 }
 
@@ -229,10 +245,19 @@ private enum class AssistantTab(val label: String) {
     ASSISTANT("Run"),
     LOGS("Chat"),
     RUNS("Runs"),
+    PIPELINES("Pipelines"),
     MISSIONS("Missions"),
     REVIEW("Review"),
     DATA("Data"),
     SETTINGS("Settings"),
+}
+
+private fun assistantTabFrom(raw: String?): AssistantTab? {
+    val value = raw?.trim().orEmpty()
+    if (value.isEmpty()) return null
+    return AssistantTab.entries.firstOrNull {
+        it.name.equals(value, ignoreCase = true) || it.label.equals(value, ignoreCase = true)
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -247,6 +272,8 @@ private fun AssistantApp(
     permissionGateway: PermissionGateway,
     pendingGoal: String?,
     pendingMaintain: Boolean,
+    requestedTab: AssistantTab?,
+    onRequestedTabConsumed: () -> Unit,
     onGoalConsumed: () -> Unit,
     onStop: suspend () -> Unit,
     onStartQueue: (Long) -> Unit,
@@ -277,13 +304,19 @@ private fun AssistantApp(
         resolution = resolution.resolution,
         markers = { previewMarkers },
         onSurfaceCreated = { previewSurfaceReady = true },
-        onSurfaceAvailable = { surface -> previewPort.attachSurface(surface) },
-        onSurfaceDestroyed = {
+        onSurfaceAvailable = { surface, owner -> previewPort.attachSurface(surface, owner) },
+        onSurfaceDestroyed = { surface, owner ->
             previewSurfaceReady = false
-            previewPort.detachSurface()
+            previewPort.detachSurface(surface, owner)
         },
     )
     var tab by remember { mutableStateOf(AssistantTab.ASSISTANT) }
+    LaunchedEffect(requestedTab) {
+        requestedTab?.let {
+            tab = it
+            onRequestedTabConsumed()
+        }
+    }
     var goal by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("Ready.") }
     var busy by remember { mutableStateOf(false) }
@@ -295,6 +328,7 @@ private fun AssistantApp(
     var missionItems by remember { mutableStateOf(emptyList<JSONObject>()) }
     var missionQueue by remember { mutableStateOf(emptyList<JSONObject>()) }
     var livePipelines by remember { mutableStateOf(emptyList<JSONObject>()) }
+    var pipelineLibrary by remember { mutableStateOf(emptyList<JSONObject>()) }
     var selectedMissionId by remember { mutableLongStateOf(0L) }
     var chatRunId by remember { mutableLongStateOf(0L) }
     var recoveredQuestion by remember { mutableStateOf<JSONObject?>(null) }
@@ -363,11 +397,18 @@ private fun AssistantApp(
                     ),
                     messageRows,
                     db.missions(),
-                    db.rows("SELECT id,name,goal FROM pipelines WHERE status='live' ORDER BY name"),
+                    db.rows(
+                        "SELECT p.id,p.name,p.goal," +
+                            "(SELECT v.id FROM pipeline_versions v " +
+                            " WHERE v.pipeline_id=p.id AND v.status='approved' " +
+                            " ORDER BY v.version DESC LIMIT 1) version_id " +
+                            "FROM pipelines p WHERE p.status='live' ORDER BY p.name",
+                    ),
                     if (missionId > 0) db.missionItems(missionId) else emptyList(),
                     db.latestPendingQuestion(),
                     if (missionId > 0) db.missionQueue(missionId) else emptyList(),
                     effectiveChatRunId,
+                    db.pipelineLibrary(),
                 )
             }
             runs = loaded[0] as List<JSONObject>
@@ -379,6 +420,7 @@ private fun AssistantApp(
             recoveredQuestion = loaded[6] as JSONObject?
             missionQueue = loaded[7] as List<JSONObject>
             chatRunId = loaded[8] as Long
+            pipelineLibrary = loaded[9] as List<JSONObject>
             val base = context.getExternalFilesDir("brain")
             val shots = if (base != null) File(base, "shots") else null
             latestShot = shots?.listFiles()?.filter { it.name.endsWith(".png") }
@@ -483,6 +525,32 @@ private fun AssistantApp(
         }
     }
 
+    val runPipeline: (Long, Long?) -> Unit = { pipelineId, versionId ->
+        if (!busy) {
+            busy = true
+            status = "Running pipeline #$pipelineId …"
+            scope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    brain.runPipeline(pipelineId, versionId)
+                }
+                status = "[${result.status}] ${result.message}"
+                busy = false
+                tick++
+            }
+        }
+    }
+
+    val openPipelines: () -> Unit = {
+        tab = AssistantTab.PIPELINES
+        tick++
+    }
+
+    val openMission: (Long) -> Unit = { missionId ->
+        selectedMissionId = missionId
+        tab = AssistantTab.MISSIONS
+        tick++
+    }
+
     LaunchedEffect(pendingGoal, pendingMaintain) {
         pendingGoal?.takeIf { it.isNotBlank() }?.let {
             goal = it
@@ -492,7 +560,7 @@ private fun AssistantApp(
         }
     }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Maa-phone Assistant") }) }) { padding ->
+    Scaffold(topBar = { TopAppBar(title = { Text("MaaFwPhoneAI Assistant") }) }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize().imePadding()) {
             ScrollableTabRow(selectedTabIndex = tab.ordinal) {
                 AssistantTab.entries.forEach { item ->
@@ -527,6 +595,15 @@ private fun AssistantApp(
                     onSelectRun = { runId -> chatRunId = runId; tick++ },
                 )
                 AssistantTab.RUNS -> RunsTab(runs)
+                AssistantTab.PIPELINES -> PipelinesTab(
+                    db = db,
+                    pipelines = pipelineLibrary,
+                    missions = missions,
+                    busy = busy,
+                    onRun = runPipeline,
+                    onOpenMission = openMission,
+                    onChanged = { status = it; tick++ },
+                )
                 AssistantTab.MISSIONS -> MissionsTab(
                     db = db,
                     missions = missions,
@@ -540,6 +617,7 @@ private fun AssistantApp(
                         tick++
                     },
                     onChanged = { status = it; tick++ },
+                    onOpenPipelines = openPipelines,
                     onRunItem = runMissionItem,
                     onStartQueue = onStartQueue,
                     onPauseQueue = onPauseQueue,
@@ -551,6 +629,7 @@ private fun AssistantApp(
                     db = db,
                     proposals = proposals,
                     busy = busy,
+                    onOpenPipelines = openPipelines,
                     onTest = { proposalId ->
                         if (!busy) {
                             busy = true
@@ -952,6 +1031,7 @@ private fun MissionsTab(
     busy: Boolean,
     onSelectMission: (Long) -> Unit,
     onChanged: (String) -> Unit,
+    onOpenPipelines: () -> Unit,
     onRunItem: (Long) -> Unit,
     onStartQueue: (Long) -> Unit,
     onPauseQueue: () -> Unit,
@@ -1033,6 +1113,23 @@ private fun MissionsTab(
                                 }) { Text("Delete") }
                             }
                         }
+                    }
+                }
+            }
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Run one pipeline now", fontWeight = FontWeight.Bold)
+                        Text(
+                            "Missions queue several pipelines. To replay one approved pipeline " +
+                                "directly (0 AI tokens), open the Pipelines tab.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        MaaOutlinedButton(
+                            onClick = onOpenPipelines,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Open pipeline library") }
                     }
                 }
             }
@@ -1194,6 +1291,8 @@ private fun MissionsTab(
                                                 selectedMissionId,
                                                 pipeline.optLong("id"),
                                                 pipeline.optString("goal"),
+                                                pipelineVersionId = pipeline.optLong("version_id")
+                                                    .takeIf { it > 0 },
                                             )
                                         }
                                         onChanged("mission item added: ${pipeline.optString("name")}")
@@ -1273,12 +1372,238 @@ private fun MissionsTab(
 }
 
 @Composable
+private fun PipelinesTab(
+    db: BrainDb,
+    pipelines: List<JSONObject>,
+    missions: List<JSONObject>,
+    busy: Boolean,
+    onRun: (Long, Long?) -> Unit,
+    onOpenMission: (Long) -> Unit,
+    onChanged: (String) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var pendingAdd by remember { mutableStateOf<JSONObject?>(null) }
+
+    LazyColumn(
+        Modifier.fillMaxSize().padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        "Pipelines",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "Approved pipelines replay a stored MaaFW graph with zero AI tokens. " +
+                            "Run one directly here, or pin it to a mission for queue/schedule execution.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        if (pipelines.isEmpty()) {
+            item {
+                Text(
+                    "No pipelines yet. Finish an AI run and approve the proposal in Review; " +
+                        "it will appear here as a runnable row.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        items(pipelines, key = { it.optLong("id") }) { pipeline ->
+            val status = pipeline.optString("status")
+            val isLive = status == "live"
+            val version = pipeline.optLong("version")
+            val versionStatus = pipeline.optString("version_status")
+            val appName = pipeline.optString("app_name").ifBlank { pipeline.optString("app_package") }
+            val nodeCount = remember(pipeline.optString("definition_json")) {
+                runCatching {
+                    val graph = JSONObject(pipeline.optString("definition_json"))
+                    graph.length()
+                }.getOrDefault(0)
+            }
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        "#${pipeline.optLong("id")} " +
+                            pipeline.optString("name").ifBlank { pipeline.optString("goal") } +
+                            " · " + status,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(pipeline.optString("goal"), style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        buildString {
+                            if (version > 0) {
+                                append("version=").append(version)
+                                if (versionStatus.isNotBlank()) append("/").append(versionStatus)
+                            } else {
+                                append("version=none")
+                            }
+                            append(" · source=").append(pipeline.optString("source").ifBlank { "?" })
+                            append(" · nodes=").append(nodeCount)
+                            if (appName.isNotBlank()) append(" · app=").append(appName)
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    val postcondition = pipeline.optString("postcondition_json")
+                    Text(
+                        if (postcondition.isBlank() || postcondition == "{}") {
+                            "postcondition: none — add a deterministic check before trusting replay"
+                        } else {
+                            "postcondition: " + postcondition.take(180)
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (postcondition.isBlank() || postcondition == "{}") {
+                            MaterialTheme.colorScheme.tertiary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                    val lastRunId = pipeline.optLong("last_run_id")
+                    if (lastRunId > 0) {
+                        Text(
+                            "last run #$lastRunId ${pipeline.optString("last_run_state")} " +
+                                "success=${pipeline.optInt("last_run_success") == 1} " +
+                                "verified=${pipeline.optInt("last_run_verified") == 1}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (pipeline.optString("last_run_error").isNotBlank()) {
+                            Text(
+                                pipeline.optString("last_run_error").take(160),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    } else {
+                        Text(
+                            "last run: none",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        MaaButton(
+                            onClick = {
+                                onRun(
+                                    pipeline.optLong("id"),
+                                    pipeline.optLong("version_id").takeIf { it > 0 },
+                                )
+                            },
+                            enabled = !busy && isLive,
+                        ) { Text(if (isLive) "Run replay" else "Not approved") }
+                        MaaOutlinedButton(
+                            onClick = { pendingAdd = pipeline },
+                            enabled = !busy,
+                        ) { Text("Add to mission") }
+                    }
+                }
+            }
+        }
+    }
+
+    pendingAdd?.let { pipeline ->
+        AlertDialog(
+            onDismissRequest = { pendingAdd = null },
+            title = { Text("Add to mission") },
+            text = {
+                Column(
+                    Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        "#${pipeline.optLong("id")} " +
+                            pipeline.optString("name").ifBlank { pipeline.optString("goal") },
+                        fontWeight = FontWeight.Bold,
+                    )
+                    if (missions.isEmpty()) {
+                        Text(
+                            "No mission exists yet. Create one and pin this pipeline to it now, " +
+                                "then add more items in the Missions tab.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        Text(
+                            "Choose a mission to pin this pipeline to:",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        missions.forEach { mission ->
+                            MaaOutlinedButton(
+                                onClick = {
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) {
+                                            db.addMissionItem(
+                                                mission.optLong("id"),
+                                                pipeline.optLong("id"),
+                                                pipeline.optString("goal"),
+                                                pipelineVersionId = pipeline.optLong("version_id")
+                                                    .takeIf { it > 0 },
+                                            )
+                                        }
+                                        pendingAdd = null
+                                        onChanged(
+                                            "pinned ${pipeline.optString("name")} to " +
+                                                "mission #${mission.optLong("id")}",
+                                        )
+                                        onOpenMission(mission.optLong("id"))
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text("#${mission.optLong("id")} ${mission.optString("name")}") }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                if (missions.isEmpty()) {
+                    MaaButton(
+                        onClick = {
+                            scope.launch {
+                                val missionId = withContext(Dispatchers.IO) {
+                                    val id = db.createMission(
+                                        pipeline.optString("name").ifBlank { "AI pipelines" },
+                                    )
+                                    db.addMissionItem(
+                                        id,
+                                        pipeline.optLong("id"),
+                                        pipeline.optString("goal"),
+                                        pipelineVersionId = pipeline.optLong("version_id")
+                                            .takeIf { it > 0 },
+                                    )
+                                    id
+                                }
+                                pendingAdd = null
+                                onChanged("created mission #$missionId with the pipeline pinned")
+                                onOpenMission(missionId)
+                            }
+                        },
+                        enabled = !busy,
+                    ) { Text("Create mission & add") }
+                }
+            },
+            dismissButton = {
+                MaaOutlinedButton(onClick = { pendingAdd = null }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@Composable
 private fun ReviewTab(
     db: BrainDb,
     proposals: List<JSONObject>,
     busy: Boolean,
     onTest: (Long) -> Unit,
     onChanged: (String) -> Unit,
+    onOpenPipelines: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     LazyColumn(Modifier.fillMaxSize().padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1345,17 +1670,32 @@ private fun ReviewTab(
                                 onClick = { onTest(proposal.optLong("id")) },
                                 enabled = !busy,
                             ) { Text("Test replay") }
-                            MaaButton(onClick = {
-                                scope.launch {
-                                    onChanged(withContext(Dispatchers.IO) { Learner.approve(db, proposal.optLong("id")) })
-                                }
-                            }) { Text("Approve") }
+                            MaaButton(
+                                onClick = {
+                                    scope.launch {
+                                        val result = withContext(Dispatchers.IO) {
+                                            Learner.approve(db, proposal.optLong("id"))
+                                        }
+                                        onChanged(result)
+                                        // Approval publishes a runnable row. Land the
+                                        // human on it instead of leaving the card in
+                                        // an approved-but-nowhere-to-run state.
+                                        if (result.startsWith("proposal #")) onOpenPipelines()
+                                    }
+                                },
+                                enabled = !busy,
+                            ) { Text("Approve & open") }
                             MaaOutlinedButton(onClick = {
                                 scope.launch {
                                     onChanged(withContext(Dispatchers.IO) { Learner.reject(db, proposal.optLong("id")) })
                                 }
                             }) { Text("Reject") }
                         }
+                    } else if (proposal.optString("status") == "approved") {
+                        MaaOutlinedButton(
+                            onClick = onOpenPipelines,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Open in pipeline library") }
                     }
                 }
             }

@@ -51,8 +51,13 @@ interface PreviewPort {
     /** 注入到虚拟屏的触点，供预览叠加显示；纯视觉信号，不进 SessionUiState */
     val markers: StateFlow<List<PreviewTouchMarker>>
 
-    fun attachSurface(surface: Surface)
-    fun detachSurface()
+    /**
+     * [owner] identifies the preview host (Activity/Composable instance) that
+     * owns this Surface. A stale `surfaceDestroyed` from an outgoing Activity
+     * must not clear the incoming Activity's already-attached Surface.
+     */
+    fun attachSurface(surface: Surface, owner: Any)
+    fun detachSurface(surface: Surface?, owner: Any)
 
     /**
      * 用户在预览上的手动操作，坐标已换算到虚拟屏坐标系
@@ -79,7 +84,9 @@ class RemotePreviewPort(
     private val touchPreviewEnabled: StateFlow<Boolean>,
 ) : PreviewPort {
 
-    private val current = AtomicReference<Surface?>(null)
+    private data class ActiveSurface(val owner: Any, val surface: Surface)
+
+    private val current = AtomicReference<ActiveSurface?>(null)
     private val markerId = AtomicLong(0L)
     private var cleanupJob: Job? = null
 
@@ -111,7 +118,7 @@ class RemotePreviewPort(
         scope.launch {
             servicePort.serviceState.collect { state ->
                 if (state == PrivilegedServiceState.Connected) {
-                    push(current.get())
+                    push(current.get()?.surface)
                 }
             }
         }
@@ -125,13 +132,22 @@ class RemotePreviewPort(
         }
     }
 
-    override fun attachSurface(surface: Surface) {
-        current.set(surface)
+    override fun attachSurface(surface: Surface, owner: Any) {
+        current.set(ActiveSurface(owner, surface))
         push(surface)
     }
 
-    override fun detachSurface() {
-        current.set(null)
+    override fun detachSurface(surface: Surface?, owner: Any) {
+        val active = current.get()
+        if (active != null) {
+            // Old Activity's SurfaceView can report destroyed after the new
+            // Activity already attached. Ignore it; the monitor belongs to the
+            // incoming host now. The Surface identity also protects a delayed
+            // destroy from the same host after its Surface was recreated.
+            if (active.owner !== owner) return
+            if (surface != null && active.surface !== surface) return
+        }
+        if (!current.compareAndSet(active, null)) return
         push(null)
         clearMarkers()
     }
@@ -160,7 +176,7 @@ class RemotePreviewPort(
     /** 只动触点回调，不碰 Surface：开关切换时画面不该跟着重置 */
     private fun pushTouchCallback() {
         val service = servicePort.serviceOrNull() ?: return
-        runCatching { service.setTouchCallback(callbackFor(current.get())) }
+        runCatching { service.setTouchCallback(callbackFor(current.get()?.surface)) }
             .onFailure { Timber.w(it, "setTouchCallback failed") }
     }
 

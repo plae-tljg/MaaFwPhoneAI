@@ -582,6 +582,36 @@ class BrainDb(context: Context) : SQLiteOpenHelper(context.applicationContext, D
             arrayOf<Any?>(limit),
         )
 
+    /**
+     * Human-facing pipeline library: every non-archived pipeline plus its
+     * current approved version and newest run evidence. Rendering these rows
+     * is what makes an approved pipeline discoverable and runnable again;
+     * without it the only path was creating a mission first.
+     */
+    fun pipelineLibrary(limit: Int = 100): List<JSONObject> =
+        rows(
+            "SELECT p.id, p.app_id, p.name, p.goal, p.status, p.source, p.autonomy, " +
+                "p.entry, p.postcondition_json, p.success, p.fail, p.last_run_at, " +
+                "a.name AS app_name, a.package_name AS app_package, " +
+                "v.id AS version_id, v.version AS version, v.status AS version_status, " +
+                "r.id AS last_run_id, r.state AS last_run_state, " +
+                "r.success AS last_run_success, r.verified AS last_run_verified, " +
+                "r.error AS last_run_error " +
+                "FROM pipelines p " +
+                "LEFT JOIN apps a ON a.id=p.app_id " +
+                "LEFT JOIN pipeline_versions v ON v.id=(" +
+                "  SELECT v2.id FROM pipeline_versions v2 WHERE v2.pipeline_id=p.id " +
+                "  ORDER BY CASE v2.status WHEN 'approved' THEN 0 ELSE 1 END, v2.version DESC LIMIT 1" +
+                ") " +
+                "LEFT JOIN runs r ON r.id=(" +
+                "  SELECT r2.id FROM runs r2 WHERE r2.pipeline_id=p.id ORDER BY r2.id DESC LIMIT 1" +
+                ") " +
+                "WHERE p.status IN ('live', 'draft', 'broken') " +
+                "ORDER BY CASE p.status WHEN 'live' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END, " +
+                "p.updated_at DESC, p.id DESC LIMIT ?",
+            arrayOf<Any?>(limit),
+        )
+
     // ---- missions -------------------------------------------------------------
 
     fun createMission(name: String, description: String = ""): Long =
@@ -596,6 +626,7 @@ class BrainDb(context: Context) : SQLiteOpenHelper(context.applicationContext, D
         goal: String,
         overridesJson: String = "{}",
         position: Long? = null,
+        pipelineVersionId: Long? = null,
     ): Long {
         val pos = position ?: rows(
             "SELECT COALESCE(MAX(position),0)+1 AS next_position FROM mission_items WHERE mission_id=?",
@@ -605,6 +636,7 @@ class BrainDb(context: Context) : SQLiteOpenHelper(context.applicationContext, D
             put("mission_id", missionId)
             put("position", pos)
             if (pipelineId != null) put("pipeline_id", pipelineId)
+            if (pipelineVersionId != null) put("pipeline_version_id", pipelineVersionId)
             put("goal", goal)
             put("overrides_json", overridesJson)
         })

@@ -85,6 +85,8 @@ fun HomeScreen(
     onIntent: (SessionIntent) -> Unit,
     update: UpdatePanelState,
     onSettingsIntent: (SettingsIntent) -> Unit,
+    onOpenPipelines: () -> Unit,
+    onOpenAssistant: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // 取 app 标签（profile 的 app.label）而非 PI 的 name：后者是 PI 自己的标识符，不是对外呈现的名字
@@ -124,6 +126,7 @@ fun HomeScreen(
             verticalArrangement = Arrangement.spacedBy(MaaDesignTokens.Spacing.md),
         ) {
             OverviewCard(state, update, onSettingsIntent)
+            BrainCard(onOpenPipelines = onOpenPipelines, onOpenAssistant = onOpenAssistant)
             ResourceCard(state, onIntent)
             RunModeCard(state, onIntent)
             PermissionCard(state, onIntent)
@@ -197,6 +200,29 @@ private fun ServiceStatusIndicator(status: ServiceStatus) {
     }
 }
 
+
+@Composable
+private fun BrainCard(onOpenPipelines: () -> Unit, onOpenAssistant: () -> Unit) {
+    MaaCard(title = stringResource(R.string.home_brain_title)) {
+        Text(
+            text = stringResource(R.string.home_brain_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        MaaButton(
+            onClick = onOpenPipelines,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(stringResource(R.string.home_open_pipelines))
+        }
+        MaaOutlinedButton(
+            onClick = onOpenAssistant,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(stringResource(R.string.home_open_assistant))
+        }
+    }
+}
 
 @Composable
 private fun PermissionCard(state: SessionUiState, onIntent: (SessionIntent) -> Unit) {

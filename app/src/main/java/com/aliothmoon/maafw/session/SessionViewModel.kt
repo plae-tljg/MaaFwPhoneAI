@@ -521,8 +521,8 @@ class SessionViewModel(
             SessionIntent.Stop -> stop()
 
             // 不走 guarded：预览与配置写入无关，运行中反而更需要它
-            is SessionIntent.AttachPreviewSurface -> previewPort.attachSurface(intent.surface)
-            SessionIntent.DetachPreviewSurface -> previewPort.detachSurface()
+            is SessionIntent.AttachPreviewSurface -> previewPort.attachSurface(intent.surface, intent.owner)
+            is SessionIntent.DetachPreviewSurface -> previewPort.detachSurface(intent.surface, intent.owner)
 
             is SessionIntent.PreviewTouch -> when (intent.action) {
                 PreviewTouchAction.Down -> previewPort.touchDown(intent.x, intent.y, intent.contact)

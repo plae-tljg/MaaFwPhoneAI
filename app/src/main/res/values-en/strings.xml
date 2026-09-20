@@ -1,5 +1,5 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <string name="app_name">MaaFwApp</string>
+    <string name="app_name">MaaFwPhoneAI</string>
 
     <!-- Common -->
     <string name="common_close">Close</string>
@@ -23,6 +23,7 @@
     <string name="tasks_empty_task_title">No tasks</string>
     <string name="tasks_empty_task_hint">Pick tasks to run from the task catalog</string>
     <string name="tasks_add_task">Add tasks</string>
+    <string name="tasks_pipeline_library">AI pipeline library</string>
     <string name="tasks_live_preview">Live preview</string>
     <string name="tasks_preview_waiting_surface">Waiting for frames</string>
     <string name="virtual_display_game_running">Running</string>
@@ -412,6 +413,10 @@
     <string name="permission_storage">All files access</string>
     <string name="permission_accessibility">Accessibility service</string>
     <string name="permission_keepalive_hint">While a background task is running, the app or the game may be cleared by system power-management policies. Lock the game in the recent-apps screen and allow it high-power background running in its battery settings.</string>
+    <string name="home_brain_title">MaaFwPhoneAI Brain</string>
+    <string name="home_brain_hint">Approved pipelines become reusable deterministic tasks: replay spends zero AI tokens. Open the library to run one, or pin it to a mission.</string>
+    <string name="home_open_pipelines">Pipeline library</string>
+    <string name="home_open_assistant">Open Assistant</string>
     <string name="home_overview">Overview</string>
     <string name="home_display_resolution">Screen resolution</string>
     <string name="home_service_status">Service status</string>

@@ -133,10 +133,10 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(MaaDesignTokens.Spacing.md),
         ) {
             UpdateCard(settingsState, onSettingsIntent)
-            MaaCard(title = "Maa-phone Brain") {
+            MaaCard(title = "MaaFwPhoneAI Brain") {
                 MaaNavigationRow(
-                    label = "Assistant (M1)",
-                    description = "Run goals, view the brain DB tables, configure the AI key",
+                    label = "Assistant · Pipelines",
+                    description = "Run approved pipelines/missions, Review, brain DB and AI key",
                     onClick = onOpenAssistant,
                 )
             }

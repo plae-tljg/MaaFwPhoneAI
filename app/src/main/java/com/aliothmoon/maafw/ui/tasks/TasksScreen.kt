@@ -63,6 +63,7 @@ fun TasksScreen(
     runLog: () -> List<RunLogEntry>,
     onEnterFullscreen: () -> Unit,
     onExportLogs: () -> Unit,
+    onOpenPipelineLibrary: () -> Unit,
     onIntent: (SessionIntent) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -103,6 +104,7 @@ fun TasksScreen(
                 runLog = runLog,
                 onEnterFullscreen = onEnterFullscreen,
                 onExportLogs = onExportLogs,
+                onOpenPipelineLibrary = onOpenPipelineLibrary,
                 onIntent = onIntent,
             )
         }
@@ -119,6 +121,7 @@ private fun TasksContent(
     runLog: () -> List<RunLogEntry>,
     onEnterFullscreen: () -> Unit,
     onExportLogs: () -> Unit,
+    onOpenPipelineLibrary: () -> Unit,
     onIntent: (SessionIntent) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -187,6 +190,10 @@ private fun TasksContent(
                         // 小窗里这张卡缩成了巴掌大，别拿它的坐标覆盖 sourceRectHint
                         onBoundsChanged = { if (!pipActive) previewBounds = it },
                     )
+                    MaaOutlinedButton(
+                        onClick = onOpenPipelineLibrary,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text(stringResource(R.string.tasks_pipeline_library)) }
                     TaskWorkspace(
                         state = state,
                         runLog = runLog,
