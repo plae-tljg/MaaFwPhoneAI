@@ -24,9 +24,9 @@ tests and known issues.
 |---|---|---|
 | **M0** — fork shell + MaaFramework native runtime | ✅ built and proven | demo PI reports `COMPLETED`; native `.so` strip corruption fixed |
 | **M1** — in-app brain + deterministic pipeline | ✅ proven for `open settings` | DB → resolver → compiler → `RunPlanPayload` → privileged runner; no AIDL change |
-| **M3/M3.2** — Assistant UI + bootstrap AI + pipeline import | ⚠️ built and installed; run #2 actually liked the video but the LLM verifier false-negatived it | Compose Assistant, live preview, Review, Data, Logs, Settings; native importer; strict final verify is nondeterministic (3 true / 2 false on the same screenshot) |
+| **M3/M3.2** — Assistant UI + bootstrap AI + pipeline import | ⚠️ built and installed; run #2 actually liked the video but the LLM verifier false-negatived it | Compose Assistant, live preview, Review/Data/Logs/Settings, native importer, Missions tab, agent `ask` modal + `needs_input`; strict final verify is nondeterministic (3 true / 2 false on the same screenshot) |
 | **M2** — tile / notification / float ball / queue / pause | ⏳ not implemented on Android | prototype has the semantics; Android currently submits all steps in one plan |
-| **M4** — on-device promotion/flywheel | ⏳ close | proposal #12 (AI-authored native clock graph) Test-replayed in run #42 with `path='pipeline'`, `verified=1` and a real OCR postcondition; approval and the imported MaaMCP workflow are still open |
+| **M4** — on-device promotion/flywheel | ⏳ close | proposal #12 (AI-authored native clock graph) Test-replayed in run #42 with `path='pipeline'`, `verified=1` and a real OCR postcondition; mission runner records run #43 with `mission_item_id`; approval and the imported MaaMCP workflow are still open |
 
 The immediate next move is still to author/import a real workflow with
 **MaaMCP + Everything-Maa**, review it and replay it with a deterministic
@@ -250,9 +250,10 @@ Known first checks:
 
 ## 7. Known limitations / next slices
 
-- **No Android step-wise pause/queue**: `BrainRunner` sends all compiled
-  steps in one plan; M2 must submit one step per `startRun`, persist
-  `runs.progress_json`, and add the queue/Do-now/Cancel surfaces.
+- **No Android step-wise pause/queue**: mission runner executes one item at a
+  time, but `BrainRunner` still sends all compiled steps in one plan; M2 must
+  submit one step per `startRun`, persist `runs.progress_json`, and add the
+  queue/Do-now/schedule surfaces.
 - **Postcondition coverage is still thin**: `pixel`/`element`/`screen_text`/
   recognition are wired and verified for proposal #12, and `file_count` is
   implemented, but imported pipelines often ship `postcondition={}` and the
@@ -266,6 +267,10 @@ Known first checks:
 - **Model verification is nondeterministic**: on the same final screenshot
   it returned 3 true / 2 false. Do not use it as the only promotion gate;
   that is the immediate correctness bug (ADR-025).
+- **Agent question recovery is in-memory**: an `ask` question is persisted in
+  `messages`/`runs.state='needs_input'`, but if the Assistant Activity is
+  destroyed the modal does not automatically re-bind on relaunch yet; add a
+  startup recovery path that reads unresolved question rows.
 - **No token accounting**: Android `runs.ai_cost` is currently 0; cost
   evidence comes from the PC prototype.
 - **Native import path not yet exercised end-to-end**: importer/pass-through

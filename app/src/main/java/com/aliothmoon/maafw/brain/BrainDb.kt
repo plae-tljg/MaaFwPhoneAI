@@ -33,6 +33,13 @@ class BrainDb(context: Context) : SQLiteOpenHelper(context.applicationContext, D
         seed(db)
     }
 
+    override fun onConfigure(db: SQLiteDatabase) {
+        super.onConfigure(db)
+        // mission_items / pipeline_version_runs declare ON DELETE CASCADE and
+        // are only useful if SQLite enforces them.
+        db.setForeignKeyConstraintsEnabled(true)
+    }
+
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         // v3 fixes legacy nested action/recognition maps that the v2 migration
         // copied verbatim. Migration is still the only place this conversion
@@ -338,16 +345,48 @@ class BrainDb(context: Context) : SQLiteOpenHelper(context.applicationContext, D
             .first().getLong("id")
     }
 
-    fun addMessage(runId: Long?, role: String, kind: String, content: String, payloadJson: String = "{}") {
-        writableDatabase.insert("messages", null, ContentValues().apply {
-            put("run_id", runId)
-            put("role", role)
-            put("kind", kind)
-            put("content", content)
-            put("payload_json", payloadJson)
-            put("source", "assistant")
-        })
+    fun addMessage(
+        runId: Long?,
+        role: String,
+        kind: String,
+        content: String,
+        payloadJson: String = "{}",
+    ): Long = writableDatabase.insert("messages", null, ContentValues().apply {
+        put("run_id", runId)
+        put("role", role)
+        put("kind", kind)
+        put("content", content)
+        put("payload_json", payloadJson)
+        put("source", "assistant")
+    })
+
+    fun setRunState(runId: Long, state: String) {
+        exec("UPDATE runs SET state=? WHERE id=?", arrayOf<Any?>(state, runId))
     }
+
+    /** Mark an agent question answered/expired/dismissed and persist the answer. */
+    fun updateMessageState(messageId: Long, state: String, answer: String = "") {
+        val payload = rows(
+            "SELECT payload_json FROM messages WHERE id=?",
+            arrayOf<Any?>(messageId),
+        ).firstOrNull()?.optString("payload_json")
+            ?.takeIf { it.isNotBlank() && it != "null" }
+            ?.let { raw -> runCatching { JSONObject(raw) }.getOrNull() }
+            ?: JSONObject()
+        if (answer.isNotBlank()) payload.put("answer", answer)
+        exec(
+            "UPDATE messages SET state=?, answered_at=datetime('now'), payload_json=? WHERE id=?",
+            arrayOf<Any?>(state, payload.toString(), messageId),
+        )
+    }
+
+    /** Startup/reconnect support: the newest unresolved agent question for a run. */
+    fun pendingQuestionForRun(runId: Long): JSONObject? =
+        rows(
+            "SELECT id,content,payload_json FROM messages " +
+                "WHERE run_id=? AND kind='question' AND state='pending' ORDER BY id DESC LIMIT 1",
+            arrayOf<Any?>(runId),
+        ).firstOrNull()
 
     fun setRunSteps(runId: Long, stepsJson: String) {
         exec("UPDATE runs SET steps_json=? WHERE id=?", arrayOf<Any?>(stepsJson, runId))
@@ -531,6 +570,42 @@ class BrainDb(context: Context) : SQLiteOpenHelper(context.applicationContext, D
             put("goal", goal)
             put("overrides_json", overridesJson)
         })
+    }
+
+    fun missions(): List<JSONObject> =
+        rows(
+            "SELECT m.*, " +
+                "(SELECT COUNT(*) FROM mission_items mi WHERE mi.mission_id=m.id) item_count " +
+                "FROM missions m ORDER BY m.enabled DESC, m.id DESC",
+        )
+
+    fun missionItems(missionId: Long): List<JSONObject> =
+        rows(
+            "SELECT mi.*, p.name pipeline_name, p.status pipeline_status, " +
+                "r.id last_run_id, r.state last_run_state, r.success last_run_success, " +
+                "r.verified last_run_verified, r.error last_run_error " +
+                "FROM mission_items mi " +
+                "LEFT JOIN pipelines p ON p.id=mi.pipeline_id " +
+                "LEFT JOIN runs r ON r.id=(" +
+                "  SELECT r2.id FROM runs r2 WHERE r2.mission_item_id=mi.id ORDER BY r2.id DESC LIMIT 1" +
+                ") " +
+                "WHERE mi.mission_id=? ORDER BY mi.position, mi.id",
+            arrayOf<Any?>(missionId),
+        )
+
+    fun deleteMission(missionId: Long) {
+        exec("DELETE FROM missions WHERE id=?", arrayOf<Any?>(missionId))
+    }
+
+    fun deleteMissionItem(itemId: Long) {
+        exec("DELETE FROM mission_items WHERE id=?", arrayOf<Any?>(itemId))
+    }
+
+    fun setMissionItemEnabled(itemId: Long, enabled: Boolean) {
+        exec(
+            "UPDATE mission_items SET enabled=?, updated_at=datetime('now') WHERE id=?",
+            arrayOf<Any?>(if (enabled) 1 else 0, itemId),
+        )
     }
 
     fun latestPendingProposal(): JSONObject? =

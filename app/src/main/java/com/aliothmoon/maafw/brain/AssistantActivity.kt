@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -40,6 +41,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -126,6 +128,7 @@ private enum class AssistantTab(val label: String) {
     ASSISTANT("Run"),
     LOGS("Logs"),
     RUNS("Runs"),
+    MISSIONS("Missions"),
     REVIEW("Review"),
     DATA("Data"),
     SETTINGS("Settings"),
@@ -148,6 +151,7 @@ private fun AssistantApp(
     val context = LocalContext.current
     val settings = remember { GlobalContext.get().get<AppSettingsManager>() }
     val resolution by settings.resolutionPreference.collectAsState()
+    val pendingQuestion by agent.pendingQuestion.collectAsState()
     var tab by remember { mutableStateOf(AssistantTab.ASSISTANT) }
     var goal by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("Ready.") }
@@ -156,6 +160,10 @@ private fun AssistantApp(
     var runs by remember { mutableStateOf(emptyList<JSONObject>()) }
     var proposals by remember { mutableStateOf(emptyList<JSONObject>()) }
     var messages by remember { mutableStateOf(emptyList<JSONObject>()) }
+    var missions by remember { mutableStateOf(emptyList<JSONObject>()) }
+    var missionItems by remember { mutableStateOf(emptyList<JSONObject>()) }
+    var livePipelines by remember { mutableStateOf(emptyList<JSONObject>()) }
+    var selectedMissionId by remember { mutableLongStateOf(0L) }
     var dataTable by remember { mutableStateOf("runs") }
     var tableRows by remember { mutableStateOf(emptyList<JSONObject>()) }
     var latestShot by remember { mutableStateOf<String?>(null) }
@@ -190,8 +198,9 @@ private fun AssistantApp(
 
     fun refresh() {
         scope.launch {
+            val missionId = selectedMissionId
             val loaded = withContext(Dispatchers.IO) {
-                Triple(
+                listOf(
                     db.rows("SELECT id,goal,state,success,verified,error,duration_ms FROM runs ORDER BY id DESC LIMIT 30"),
                     db.rows(
                         "SELECT p.id,p.kind,p.status,p.source_run_id,p.target_pipeline_id,p.target_version_id," +
@@ -202,11 +211,17 @@ private fun AssistantApp(
                             "FROM proposals p ORDER BY p.id DESC LIMIT 30",
                     ),
                     db.rows("SELECT id,run_id,role,kind,substr(content,1,200) content FROM messages ORDER BY id DESC LIMIT 80"),
+                    db.missions(),
+                    db.rows("SELECT id,name,goal FROM pipelines WHERE status='live' ORDER BY name"),
+                    if (missionId > 0) db.missionItems(missionId) else emptyList(),
                 )
             }
-            runs = loaded.first
-            proposals = loaded.second
-            messages = loaded.third.reversed()
+            runs = loaded[0]
+            proposals = loaded[1]
+            messages = loaded[2].reversed()
+            missions = loaded[3]
+            livePipelines = loaded[4]
+            missionItems = loaded[5]
             val base = context.getExternalFilesDir("brain")
             val shots = if (base != null) File(base, "shots") else null
             latestShot = shots?.listFiles()?.filter { it.name.endsWith(".png") }
@@ -298,6 +313,19 @@ private fun AssistantApp(
         }
     }
 
+    val runMissionItem: (Long) -> Unit = { itemId ->
+        if (!busy) {
+            busy = true
+            status = "Running mission item #$itemId …"
+            scope.launch {
+                val result = withContext(Dispatchers.IO) { brain.runMissionItem(itemId) }
+                status = "[${result.status}] ${result.message}"
+                busy = false
+                tick++
+            }
+        }
+    }
+
     LaunchedEffect(pendingGoal, pendingMaintain) {
         pendingGoal?.takeIf { it.isNotBlank() }?.let {
             goal = it
@@ -332,6 +360,20 @@ private fun AssistantApp(
                 )
                 AssistantTab.LOGS -> LogsTab(messages)
                 AssistantTab.RUNS -> RunsTab(runs)
+                AssistantTab.MISSIONS -> MissionsTab(
+                    db = db,
+                    missions = missions,
+                    missionItems = missionItems,
+                    livePipelines = livePipelines,
+                    selectedMissionId = selectedMissionId,
+                    busy = busy,
+                    onSelectMission = { missionId ->
+                        selectedMissionId = missionId
+                        tick++
+                    },
+                    onChanged = { status = it; tick++ },
+                    onRunItem = runMissionItem,
+                )
                 AssistantTab.REVIEW -> ReviewTab(
                     db = db,
                     proposals = proposals,
@@ -367,6 +409,74 @@ private fun AssistantApp(
             }
         }
     }
+
+    pendingQuestion?.let { question ->
+        AgentQuestionDialog(
+            question = question,
+            onAnswer = { answer -> agent.submitAnswer(answer) },
+            onCancel = { agent.requestCancel() },
+        )
+    }
+}
+
+@Composable
+private fun AgentQuestionDialog(
+    question: AgentRunner.PendingQuestion,
+    onAnswer: (String) -> Unit,
+    onCancel: () -> Unit,
+) {
+    var freeText by remember(question.messageId) { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Agent needs input") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(question.question, style = MaterialTheme.typography.bodyMedium)
+                question.options.forEach { option ->
+                    MaaOutlinedButton(
+                        onClick = { onAnswer(option) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text(option) }
+                }
+                if (question.allowFreeText) {
+                    OutlinedTextField(
+                        value = freeText,
+                        onValueChange = { freeText = it },
+                        label = { Text("Type your answer") },
+                        modifier = Modifier.fillMaxWidth(),
+                        maxLines = 4,
+                    )
+                } else if (question.options.isEmpty()) {
+                    Text(
+                        "No options were provided; type a reply is impossible without free text.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (question.allowFreeText) {
+                MaaButton(
+                    onClick = {
+                        val answer = freeText.trim()
+                        if (answer.isNotEmpty()) onAnswer(answer)
+                    },
+                    enabled = freeText.isNotBlank(),
+                ) { Text("Send") }
+            } else {
+                MaaButton(onClick = onCancel) { Text("Cancel") }
+            }
+        },
+        dismissButton = {
+            if (question.allowFreeText) {
+                MaaOutlinedButton(onClick = onCancel) { Text("Cancel") }
+            }
+        },
+    )
 }
 
 @Composable
@@ -492,6 +602,228 @@ private fun RunsTab(runs: List<JSONObject>) {
                     if (run.optString("error").isNotBlank()) {
                         Text(run.optString("error"), style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MissionsTab(
+    db: BrainDb,
+    missions: List<JSONObject>,
+    missionItems: List<JSONObject>,
+    livePipelines: List<JSONObject>,
+    selectedMissionId: Long,
+    busy: Boolean,
+    onSelectMission: (Long) -> Unit,
+    onChanged: (String) -> Unit,
+    onRunItem: (Long) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var newMissionName by remember { mutableStateOf("") }
+    var newItemGoal by remember { mutableStateOf("") }
+    val selected = missions.firstOrNull { it.optLong("id") == selectedMissionId }
+
+    LazyColumn(
+        Modifier.fillMaxSize().padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        if (selectedMissionId <= 0 || selected == null) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Missions", style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold)
+                        Text(
+                            "Create a mission, add pipeline/AI items, then run each item into the " +
+                                "normal runs table with mission provenance.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        OutlinedTextField(
+                            value = newMissionName,
+                            onValueChange = { newMissionName = it },
+                            label = { Text("Mission name") },
+                            modifier = Modifier.fillMaxWidth(),
+                            maxLines = 2,
+                        )
+                        MaaButton(
+                            onClick = {
+                                val name = newMissionName.trim()
+                                if (name.isNotBlank()) {
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) { db.createMission(name) }
+                                        newMissionName = ""
+                                        onChanged("mission created")
+                                    }
+                                }
+                            },
+                            enabled = !busy && newMissionName.isNotBlank(),
+                        ) { Text("Create mission") }
+                    }
+                }
+            }
+            if (missions.isEmpty()) {
+                item { Text("No missions yet.", style = MaterialTheme.typography.bodySmall) }
+            } else {
+                items(missions) { mission ->
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                "#${mission.optLong("id")} ${mission.optString("name")}",
+                                fontWeight = FontWeight.Bold,
+                            )
+                            if (mission.optString("description").isNotBlank()) {
+                                Text(mission.optString("description"), style = MaterialTheme.typography.bodySmall)
+                            }
+                            Text(
+                                "items=${mission.optLong("item_count")} enabled=${mission.optInt("enabled") == 1}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                MaaButton(onClick = { onSelectMission(mission.optLong("id")) }) { Text("Open") }
+                                MaaOutlinedButton(onClick = {
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) { db.deleteMission(mission.optLong("id")) }
+                                        onChanged("mission deleted")
+                                    }
+                                }) { Text("Delete") }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            "Mission #${selected.optLong("id")} · ${selected.optString("name")}",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        MaaOutlinedButton(onClick = { onSelectMission(0L) }) { Text("Back to missions") }
+                    }
+                }
+            }
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Add item", fontWeight = FontWeight.Bold)
+                        OutlinedTextField(
+                            value = newItemGoal,
+                            onValueChange = { newItemGoal = it },
+                            label = { Text("Goal (used by AI fallback or matching pipeline)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            maxLines = 3,
+                        )
+                        MaaButton(
+                            onClick = {
+                                val goal = newItemGoal.trim()
+                                if (goal.isNotBlank()) {
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) {
+                                            db.addMissionItem(selectedMissionId, null, goal)
+                                        }
+                                        newItemGoal = ""
+                                        onChanged("mission item added (AI goal)")
+                                    }
+                                }
+                            },
+                            enabled = !busy && newItemGoal.isNotBlank(),
+                        ) { Text("Add goal item") }
+                        Text(
+                            if (livePipelines.isEmpty()) {
+                                "No live pipelines yet; goal items will use AI fallback when run."
+                            } else {
+                                "Or pin a live pipeline:"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        livePipelines.forEach { pipeline ->
+                            MaaOutlinedButton(
+                                onClick = {
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) {
+                                            db.addMissionItem(
+                                                selectedMissionId,
+                                                pipeline.optLong("id"),
+                                                pipeline.optString("goal"),
+                                            )
+                                        }
+                                        onChanged("mission item added: ${pipeline.optString("name")}")
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text("+ ${pipeline.optString("name")}") }
+                        }
+                    }
+                }
+            }
+            if (missionItems.isEmpty()) {
+                item { Text("No items in this mission yet.", style = MaterialTheme.typography.bodySmall) }
+            } else {
+                items(missionItems) { item ->
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                "#${item.optLong("id")} · pos=${item.optLong("position")} · " +
+                                    if (item.optInt("enabled") == 1) "enabled" else "disabled",
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(
+                                item.optString("pipeline_name").ifBlank { item.optString("goal") },
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            if (item.isNull("last_run_id")) {
+                                Text(
+                                    "last run: none",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            } else {
+                                Text(
+                                    "last run #${item.optLong("last_run_id")} · " +
+                                        "${item.optString("last_run_state")} · " +
+                                        "success=${item.optInt("last_run_success") == 1} · " +
+                                        "verified=${item.optInt("last_run_verified") == 1}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                if (item.optString("last_run_error").isNotBlank()) {
+                                    Text(
+                                        item.optString("last_run_error"),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
+                                }
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                MaaButton(
+                                    onClick = { onRunItem(item.optLong("id")) },
+                                    enabled = !busy && item.optInt("enabled") == 1,
+                                ) { Text("Run") }
+                                MaaOutlinedButton(onClick = {
+                                    val nowEnabled = item.optInt("enabled") == 1
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) {
+                                            db.setMissionItemEnabled(item.optLong("id"), !nowEnabled)
+                                        }
+                                        onChanged(if (nowEnabled) "mission item disabled" else "mission item enabled")
+                                    }
+                                }) { Text(if (item.optInt("enabled") == 1) "Disable" else "Enable") }
+                                MaaOutlinedButton(onClick = {
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) { db.deleteMissionItem(item.optLong("id")) }
+                                        onChanged("mission item deleted")
+                                    }
+                                }) { Text("Delete") }
+                            }
+                        }
                     }
                 }
             }

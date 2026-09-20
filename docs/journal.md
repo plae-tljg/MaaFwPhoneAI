@@ -149,3 +149,37 @@ Android 单测恢复到 `463 tests, 0 failed, 2 skipped`：补了 `VerifierTest`
 下一步仍然是导入真实 MaaMCP/M9A workflow、Mission UI、agent-IO
 `needs_input` 和 replay-K/healing；不要在设备测试里再用“日志出现某几个
 字”替代真实后置条件证据。
+
+## 8. Agent IO 与 Mission MVP（2026-09-20 下午续接）
+
+上一轮修完 OCR/确定性后置条件后，继续实现计划里的两个用户可见闭环：
+
+### Agent IO（`ask` / `needs_input`）
+
+- 工具 schema 增加 `ask`：
+  `{"action":"ask","question":"...","options":[...],"allow_free_text":true}`。
+- `AgentRunner` 收到后写一条 assistant `messages(kind='question')`，把
+  `runs.state` 置为 `needs_input`，通过 `CompletableDeferred` 挂起同一条
+  协程；Assistant 用 AlertDialog 显示选项按钮 + 自由输入 + Cancel。
+- 用户选择/输入后：问题消息置 `answered`、补一条 `user/answer`、把答案
+  写进 history/trajectory，然后**继续原 run**；Cancel 则走取消路径。
+- 真机验证用了临时 debug hook 直接打开 modal（uiautomator 确认
+  title/question/options/free text/Send/Cancel 都在，Cancel 能关闭）。测试
+  完把 hook 和 debug-only exported manifest 都删掉了，产品代码不暴露该入口。
+
+### Mission MVP
+
+- Assistant 新增 **Missions** tab：建/删 mission、添加 AI goal item 或固定
+  一条 live pipeline、enable/disable/delete item、Run item。
+- `BrainRunner.runMissionItem(itemId)`：有 pipeline 时按 pinned version（没有
+  则 current live definition）走同一 `executePipeline`；没有 pipeline 时走
+  AI fallback；run 会写 `mission_item_id`、`pipeline_id`、
+  `pipeline_version_id`，并执行同一个确定性 postcondition。
+- `BrainDb` 增加 missions list/items 查询，并在 `onConfigure` 打开 SQLite
+  foreign keys，让 mission 删除能级联 item。
+- 证据：run #43 = mission item #1（pin `open_settings`），
+  `path='pipeline'`, `success=1`, `mission_item_id=1`；该老 pipeline 没有
+  postcondition，所以 `verified=0`，符合“没检查就明确 skipped/0”的规则。
+
+仍未做：Activity 重建后自动恢复未回答的 question、完整 chat transcript、
+mission 队列/定时、带确定性 postcondition 的 imported candidate 跑 mission。

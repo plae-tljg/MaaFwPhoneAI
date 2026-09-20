@@ -39,7 +39,11 @@ class BrainRunner(
      * @param mode "auto" = normal resolver + AI fallback on a miss;
      *             "replay" = only run an existing live pipeline, never fall back.
      */
-    suspend fun runGoal(goal: String, mode: String = "auto"): GoalResult {
+    suspend fun runGoal(
+        goal: String,
+        mode: String = "auto",
+        missionItemId: Long? = null,
+    ): GoalResult {
         val replayOnly = mode == "replay"
         val resolved = Resolver.resolve(db, goal)
         if (resolved == null) {
@@ -54,9 +58,27 @@ class BrainRunner(
             db.finishRun(runId, false, message, System.currentTimeMillis() - startedAt)
             return GoalResult(if (replayOnly) "no_pipeline" else "no_skill", message, runId = runId)
         }
+        return executePipeline(goal, resolved.first, resolved.second, missionItemId)
+    }
+
+    /**
+     * Authoritative pipeline runner used by resolver hits and mission items.
+     * It owns exactly one `runs` row and keeps the mission/pipeline/version
+     * provenance columns in sync before any MaaFW task starts.
+     */
+    private suspend fun executePipeline(
+        goal: String,
+        pipeline: PipelineRow,
+        score: Int,
+        missionItemId: Long? = null,
+        pipelineVersionId: Long? = null,
+    ): GoalResult {
         val startedAt = System.currentTimeMillis()
-        val runId = db.startRun(goal)
-        val (pipeline, score) = resolved
+        val runId = db.startRun(goal, path = "pipeline")
+        db.exec(
+            "UPDATE runs SET pipeline_id=?, pipeline_version_id=?, mission_item_id=? WHERE id=?",
+            arrayOf<Any?>(pipeline.id, pipelineVersionId, missionItemId, runId),
+        )
         val fileCountBefore = Verifier.fileCountBaseline(pipeline.postconditionJson)
         val compiled = Compiler.compile(db, pipeline)
         if (compiled.nodes.isEmpty()) {
@@ -128,6 +150,90 @@ class BrainRunner(
             db.finishRun(runId, false, message, System.currentTimeMillis() - startedAt)
             GoalResult("error", message, runId = runId, pipelineId = pipeline.id)
         }
+    }
+
+    /**
+     * Run one mission item. A pipeline item executes the pinned version when
+     * present, otherwise the pipeline's current live definition. A goal-only
+     * item falls back to the same resolver/AI path as a normal goal run.
+     */
+    suspend fun runMissionItem(itemId: Long): GoalResult {
+        val item = db.rows(
+            "SELECT * FROM mission_items WHERE id=?",
+            arrayOf<Any?>(itemId),
+        ).firstOrNull() ?: return GoalResult("not_found", "Mission item #$itemId not found.")
+        if (item.optInt("enabled", 1) == 0) {
+            return GoalResult("disabled", "Mission item #$itemId is disabled.")
+        }
+        val pipelineId = item.opt("pipeline_id")
+            ?.takeIf { it != JSONObject.NULL }?.toString()?.toLongOrNull()
+        val versionId = item.opt("pipeline_version_id")
+            ?.takeIf { it != JSONObject.NULL }?.toString()?.toLongOrNull()
+        val goal = item.optString("goal").trim()
+        if (pipelineId == null) {
+            if (goal.isBlank()) return GoalResult("bad_item", "Mission item #$itemId has no goal.")
+            val result = if (aiFallback != null) aiFallback.invoke(goal) else runGoal(goal)
+            result.runId?.let { runId -> linkMissionRun(runId, itemId) }
+            return result
+        }
+        val pipeline = loadPipelineForRun(pipelineId, versionId)
+        if (pipeline == null) {
+            val startedAt = System.currentTimeMillis()
+            val runGoal = goal.ifBlank { "mission item #$itemId" }
+            val runId = db.startRun(runGoal, path = "pipeline")
+            linkMissionRun(runId, itemId)
+            val message = "Mission item #$itemId references missing pipeline #$pipelineId" +
+                if (versionId != null) " version #$versionId" else ""
+            db.finishRun(runId, false, message, System.currentTimeMillis() - startedAt)
+            return GoalResult("pipeline_missing", message, runId = runId, pipelineId = pipelineId)
+        }
+        return executePipeline(
+            goal = goal.ifBlank { pipeline.goal },
+            pipeline = pipeline,
+            score = 100,
+            missionItemId = itemId,
+            pipelineVersionId = versionId,
+        )
+    }
+
+    private fun loadPipelineForRun(pipelineId: Long, versionId: Long?): PipelineRow? {
+        val row = db.rows("SELECT * FROM pipelines WHERE id=?", arrayOf<Any?>(pipelineId)).firstOrNull()
+            ?: return null
+        val definitionJson: String
+        val entry: String
+        val postconditionJson: String
+        if (versionId != null) {
+            val version = db.rows(
+                "SELECT definition_json,entry,postcondition_json FROM pipeline_versions " +
+                    "WHERE id=? AND pipeline_id=?",
+                arrayOf<Any?>(versionId, pipelineId),
+            ).firstOrNull() ?: return null
+            definitionJson = version.optString("definition_json", "{}")
+            entry = version.optString("entry", "")
+            postconditionJson = version.optString("postcondition_json", "{}")
+        } else {
+            definitionJson = row.optString("definition_json", "{}")
+            entry = row.optString("entry", "")
+            postconditionJson = row.optString("postcondition_json", "{}")
+        }
+        return PipelineRow(
+            id = pipelineId,
+            appId = row.opt("app_id")?.takeIf { it != JSONObject.NULL }?.toString()?.toLongOrNull(),
+            name = row.optString("name").ifBlank { "pipeline_$pipelineId" },
+            goal = row.optString("goal"),
+            aliases = parseAliases(row.optString("aliases")),
+            definitionJson = definitionJson,
+            autonomy = row.optString("autonomy", "confirm"),
+            entry = entry,
+            postconditionJson = postconditionJson,
+        )
+    }
+
+    private fun linkMissionRun(runId: Long, missionItemId: Long) {
+        db.exec(
+            "UPDATE runs SET mission_item_id=? WHERE id=?",
+            arrayOf<Any?>(missionItemId, runId),
+        )
     }
 
     private fun planFor(compiled: Compiler.CompiledGraph, pipelineName: String): RunPlan = RunPlan(

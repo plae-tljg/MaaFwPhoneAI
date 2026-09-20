@@ -125,6 +125,10 @@ class DeepSeekClient(private val db: BrainDb) {
               "action":"DoNothing"}}. Use direct field names package/input_text/key/target/
               template/threshold/roi/next/on_error. If you write {"action":{"type":"StartApp",
               "param":{"package":"..."}}}, flatten it to {"action":"StartApp","package":"..."}.
+            - If you need a user decision or missing information (ambiguous target, irreversible action,
+              credentials, or a choice between options), call
+              {"action":"ask","question":"...","options":["Yes","No"],"allow_free_text":true}.
+              The run pauses in needs_input and resumes with the user's answer. Ask once, then continue.
             - If the goal cannot be done, call fail with a reason.
         """.trimIndent() + "\nKnown apps: " + (knownApps.joinToString("; ").ifBlank { "(none)" }) +
             if (skillGuidance.isBlank()) "" else "\n\n" + skillGuidance
@@ -347,7 +351,7 @@ class DeepSeekClient(private val db: BrainDb) {
             .put(
                 "action",
                 JSONObject().put("type", "string")
-                    .put("enum", JSONArray(listOf("launch", "locate", "tap", "text", "key", "swipe", "wait", "recognize", "benchmark", "propose_pipeline", "done", "fail")))
+                    .put("enum", JSONArray(listOf("launch", "locate", "tap", "text", "key", "swipe", "wait", "recognize", "benchmark", "propose_pipeline", "ask", "done", "fail")))
             )
             .put("package", JSONObject().put("type", "string"))
             .put("description", JSONObject().put("type", "string"))
@@ -371,6 +375,13 @@ class DeepSeekClient(private val db: BrainDb) {
                             "pixel | element | screen_text | file_count",
                     ),
             )
+            .put("question", JSONObject().put("type", "string"))
+            .put(
+                "options",
+                JSONObject().put("type", "array")
+                    .put("items", JSONObject().put("type", "string")),
+            )
+            .put("allow_free_text", JSONObject().put("type", "boolean"))
             .put("summary", JSONObject().put("type", "string"))
             .put("reason", JSONObject().put("type", "string"))
         val parameters = JSONObject()

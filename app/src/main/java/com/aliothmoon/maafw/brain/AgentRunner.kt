@@ -2,7 +2,12 @@ package com.aliothmoon.maafw.brain
 
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 import org.json.JSONArray
 import org.json.JSONObject
@@ -20,6 +25,23 @@ class AgentRunner(
     private val deepseek: DeepSeekClient,
 ) {
 
+    /** A live `ask` action waiting for the user in the Assistant UI. */
+    data class PendingQuestion(
+        val runId: Long,
+        val messageId: Long,
+        val question: String,
+        val options: List<String>,
+        val allowFreeText: Boolean,
+    )
+
+    private val _pendingQuestion = MutableStateFlow<PendingQuestion?>(null)
+    val pendingQuestion: StateFlow<PendingQuestion?> = _pendingQuestion.asStateFlow()
+
+    private val answerLock = Any()
+
+    @Volatile
+    private var answerDeferred: CompletableDeferred<String>? = null
+
     fun configured(): Boolean = deepseek.configured()
 
     @Volatile
@@ -27,6 +49,20 @@ class AgentRunner(
 
     fun requestCancel() {
         cancelRequested = true
+        synchronized(answerLock) {
+            answerDeferred?.complete(ANSWER_CANCEL)
+            answerDeferred = null
+        }
+        _pendingQuestion.value = null
+    }
+
+    /** Called by the Assistant modal. The run loop resumes on its own coroutine. */
+    fun submitAnswer(answer: String) {
+        val value = answer.trim()
+        if (value.isEmpty()) return
+        synchronized(answerLock) {
+            answerDeferred?.complete(value)
+        }
     }
 
     suspend fun stopRunner(): Boolean = tools.stop()
@@ -42,6 +78,8 @@ class AgentRunner(
         targetAppId: Long? = null,
     ): BrainRunner.GoalResult {
         cancelRequested = false
+        synchronized(answerLock) { answerDeferred = null }
+        _pendingQuestion.value = null
         if (!configured()) {
             return BrainRunner.GoalResult("no_key", "No DeepSeek API key configured.")
         }
@@ -220,6 +258,84 @@ class AgentRunner(
                 "fail" -> {
                     error = action.optString("reason", "agent failed")
                     break
+                }
+                "ask" -> {
+                    val question = action.optString("question").trim()
+                        .ifBlank { "I need your input to continue with this goal." }
+                    val optionList = mutableListOf<String>()
+                    action.optJSONArray("options")?.let { arr ->
+                        for (i in 0 until arr.length()) {
+                            arr.optString(i).trim().takeIf { it.isNotBlank() }?.let { optionList += it }
+                        }
+                    }
+                    val allowFreeText = if (action.has("allow_free_text")) {
+                        action.optBoolean("allow_free_text", true)
+                    } else {
+                        optionList.isEmpty()
+                    }
+                    val questionMessageId = db.addMessage(
+                        runId,
+                        "assistant",
+                        "question",
+                        question,
+                        JSONObject()
+                            .put("options", JSONArray(optionList))
+                            .put("allow_free_text", allowFreeText)
+                            .toString(),
+                    )
+                    db.setRunState(runId, "needs_input")
+                    db.addMessage(runId, "assistant", "status", "waiting for user input: $question")
+                    val deferred = CompletableDeferred<String>()
+                    synchronized(answerLock) { answerDeferred = deferred }
+                    _pendingQuestion.value = PendingQuestion(
+                        runId = runId,
+                        messageId = questionMessageId,
+                        question = question,
+                        options = optionList,
+                        allowFreeText = allowFreeText,
+                    )
+                    val answer = withTimeoutOrNull(QUESTION_TIMEOUT_MS) {
+                        if (cancelRequested) ANSWER_CANCEL else deferred.await()
+                    } ?: ANSWER_TIMEOUT
+                    synchronized(answerLock) {
+                        if (answerDeferred === deferred) answerDeferred = null
+                    }
+                    _pendingQuestion.value = null
+                    db.setRunState(runId, "running")
+                    when {
+                        cancelRequested || answer == ANSWER_CANCEL -> {
+                            db.updateMessageState(questionMessageId, "dismissed")
+                            error = "cancelled by user"
+                            success = false
+                            break
+                        }
+                        answer == ANSWER_TIMEOUT -> {
+                            db.updateMessageState(questionMessageId, "expired")
+                            error = "timed out waiting for user input"
+                            success = false
+                            break
+                        }
+                    }
+                    db.updateMessageState(questionMessageId, "answered", answer)
+                    db.addMessage(
+                        runId,
+                        "user",
+                        "answer",
+                        answer,
+                        JSONObject().put("question_message_id", questionMessageId).toString(),
+                    )
+                    trajectory.add(
+                        JSONObject()
+                            .put("action", "answer")
+                            .put("value", answer)
+                            .put("question", question)
+                            .put("question_message_id", questionMessageId),
+                    )
+                    db.setRunSteps(runId, JSONArray(trajectory).toString())
+                    history.add("user answer -> $answer")
+                    db.addMessage(runId, "assistant", "status", "user answered: $answer")
+                    delay(300)
+                    continue
                 }
                 "propose_pipeline" -> {
                     val graph = action.optJSONObject("pipeline") ?: action.optJSONObject("graph")
@@ -724,5 +840,11 @@ class AgentRunner(
                 (arr.optDouble(1) * scale).toInt(),
             )
         )
+    }
+
+    private companion object {
+        const val QUESTION_TIMEOUT_MS = 10 * 60 * 1000L
+        const val ANSWER_CANCEL = "__cancel__"
+        const val ANSWER_TIMEOUT = "__timeout__"
     }
 }
