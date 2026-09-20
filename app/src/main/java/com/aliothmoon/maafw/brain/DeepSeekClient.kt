@@ -111,6 +111,14 @@ class DeepSeekClient(private val db: BrainDb) {
               call {"action":"propose_pipeline","pipeline":{"NodeA":{...},"NodeB":{...}},
               "entry":"NodeA","postcondition":{...}}. It becomes a pending Review proposal; do not
               use it for live execution until Test replay/approve.
+            - The "postcondition" must be a deterministic local check with an explicit type.
+              Use exactly one of these shapes (extra fields are allowed):
+                {"type":"pixel","point":[x,y],"rgb":[r,g,b],"tolerance":60,"radius":10}
+                {"type":"element","recognition":"OCR","expected":["text|other"],"roi":[0,0,w,h],"threshold":0.3}
+                {"type":"screen_text","text":"text that must be visible"}
+                {"type":"file_count","path":"/sdcard/DCIM/Camera","delta_min":1}
+              Never pass a bare node/recognition object as the whole postcondition; it must contain
+              "type" so Test replay can decide success without the vision model.
             - Native MaaFW node fields are FLAT, not nested type/param objects. Example:
               {"Open":{"recognition":"OCR","expected":["闹钟|时钟"],"action":"DoNothing",
               "next":["Verify"]},"Verify":{"recognition":"OCR","expected":[...],
@@ -354,7 +362,15 @@ class DeepSeekClient(private val db: BrainDb) {
             .put("times", JSONObject().put("type", "integer"))
             .put("entry", JSONObject().put("type", "string"))
             .put("pipeline", JSONObject().put("type", "object").put("additionalProperties", true))
-            .put("postcondition", JSONObject().put("type", "object").put("additionalProperties", true))
+            .put(
+                "postcondition",
+                JSONObject().put("type", "object").put("additionalProperties", true)
+                    .put(
+                        "description",
+                        "Deterministic postcondition with explicit type: " +
+                            "pixel | element | screen_text | file_count",
+                    ),
+            )
             .put("summary", JSONObject().put("type", "string"))
             .put("reason", JSONObject().put("type", "string"))
         val parameters = JSONObject()

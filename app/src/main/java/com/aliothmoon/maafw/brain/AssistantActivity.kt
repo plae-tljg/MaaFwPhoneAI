@@ -24,13 +24,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScrollableTabRow
@@ -58,6 +56,8 @@ import com.aliothmoon.maafw.runner.PreviewPort
 import com.aliothmoon.maafw.runner.RunnerPort
 import com.aliothmoon.maafw.settings.AppSettingsManager
 import com.aliothmoon.maafw.theme.MaaFwTheme
+import com.aliothmoon.maafw.ui.components.MaaButton
+import com.aliothmoon.maafw.ui.components.MaaOutlinedButton
 import com.aliothmoon.maafw.ui.components.MaaPreviewSurface
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -193,7 +193,14 @@ private fun AssistantApp(
             val loaded = withContext(Dispatchers.IO) {
                 Triple(
                     db.rows("SELECT id,goal,state,success,verified,error,duration_ms FROM runs ORDER BY id DESC LIMIT 30"),
-                    db.rows("SELECT id,kind,status,source_run_id,target_pipeline_id,target_version_id,substr(candidate_json,1,240) candidate FROM proposals ORDER BY id DESC LIMIT 30"),
+                    db.rows(
+                        "SELECT p.id,p.kind,p.status,p.source_run_id,p.target_pipeline_id,p.target_version_id," +
+                            "p.candidate_json," +
+                            "(SELECT group_concat(r.id || ':' || pvr.role || ':' || r.success || ':' || r.verified, ' | ') " +
+                            " FROM pipeline_version_runs pvr JOIN runs r ON r.id=pvr.run_id " +
+                            " WHERE pvr.pipeline_version_id=p.target_version_id) evidence " +
+                            "FROM proposals p ORDER BY p.id DESC LIMIT 30",
+                    ),
                     db.rows("SELECT id,run_id,role,kind,substr(content,1,200) content FROM messages ORDER BY id DESC LIMIT 80"),
                 )
             }
@@ -416,10 +423,10 @@ private fun AssistantTabContent(
             maxLines = 3,
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Button(onClick = onRun, enabled = !busy) { Text(if (busy) "Running…" else "Run") }
-            OutlinedButton(onClick = onMaintain, enabled = !busy) { Text("Replay + improve") }
-            OutlinedButton(onClick = onStop, enabled = busy) { Text("Stop") }
-            OutlinedButton(onClick = onImport) { Text("Import pipeline") }
+            MaaButton(onClick = onRun, enabled = !busy) { Text(if (busy) "Running…" else "Run") }
+            MaaOutlinedButton(onClick = onMaintain, enabled = !busy) { Text("Replay + improve") }
+            MaaOutlinedButton(onClick = onStop, enabled = busy) { Text("Stop") }
+            MaaOutlinedButton(onClick = onImport) { Text("Import pipeline") }
         }
         Text(status, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 10.dp))
         Text(
@@ -503,6 +510,11 @@ private fun ReviewTab(
     val scope = rememberCoroutineScope()
     LazyColumn(Modifier.fillMaxSize().padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         items(proposals) { proposal ->
+            val candidate = remember(proposal.optString("candidate_json")) {
+                runCatching { JSONObject(proposal.optString("candidate_json")) }.getOrNull()
+            }
+            val pipeline = candidate?.optJSONObject("pipeline")
+            val graph = pipeline?.optJSONObject("graph")
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(10.dp)) {
                     Text(
@@ -518,19 +530,54 @@ private fun ReviewTab(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Text(proposal.optString("candidate"), style = MaterialTheme.typography.bodySmall)
+                    pipeline?.optString("goal")?.takeIf { it.isNotBlank() }?.let {
+                        Text(it, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    if (graph != null) {
+                        Text(
+                            "entry=${pipeline?.optString("entry").orEmpty()} · ${graph.length()} node(s)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        val nodes = graph.keys().asSequence().take(8).map { name ->
+                            val node = graph.optJSONObject(name)
+                            val recognition = node?.optString("recognition").orEmpty()
+                            val action = node?.optString("action").orEmpty()
+                            "$name: ${recognition.ifBlank { "DirectHit" }}/${action.ifBlank { "DoNothing" }}"
+                        }.toList()
+                        Text(
+                            nodes.joinToString("\n"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    val postcondition = pipeline?.optJSONObject("postcondition")
+                    Text(
+                        "postcondition: " + (postcondition?.toString() ?: "{}"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    val evidence = proposal.opt("evidence")
+                        ?.takeIf { it != JSONObject.NULL }
+                        ?.toString()
+                        ?.takeIf { it.isNotBlank() && it != "null" }
+                    Text(
+                        if (evidence == null) "replay evidence: none yet" else "runs (id:role:success:verified): $evidence",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     if (proposal.optString("status") == "pending") {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
+                            MaaOutlinedButton(
                                 onClick = { onTest(proposal.optLong("id")) },
                                 enabled = !busy,
                             ) { Text("Test replay") }
-                            Button(onClick = {
+                            MaaButton(onClick = {
                                 scope.launch {
                                     onChanged(withContext(Dispatchers.IO) { Learner.approve(db, proposal.optLong("id")) })
                                 }
                             }) { Text("Approve") }
-                            OutlinedButton(onClick = {
+                            MaaOutlinedButton(onClick = {
                                 scope.launch {
                                     onChanged(withContext(Dispatchers.IO) { Learner.reject(db, proposal.optLong("id")) })
                                 }
@@ -556,8 +603,8 @@ private fun DataTab(
     Column(Modifier.fillMaxSize().padding(10.dp)) {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             tables.forEach { item ->
-                if (item == table) Button(onClick = { onTable(item); onRefresh() }) { Text(item) }
-                else OutlinedButton(onClick = { onTable(item); onRefresh() }) { Text(item) }
+                if (item == table) MaaButton(onClick = { onTable(item); onRefresh() }) { Text(item) }
+                else MaaOutlinedButton(onClick = { onTable(item); onRefresh() }) { Text(item) }
             }
         }
         Spacer(Modifier.height(8.dp))
@@ -629,7 +676,7 @@ private fun SettingsTab(db: BrainDb, deepseek: DeepSeekClient, onStatus: (String
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = {
+            MaaButton(onClick = {
                 db.setSetting("deepseek_api_key", apiKey.trim())
                 db.setSetting("deepseek_base", baseUrl.trim().trimEnd('/'))
                 db.setSetting("deepseek_model", model.trim())
@@ -638,7 +685,7 @@ private fun SettingsTab(db: BrainDb, deepseek: DeepSeekClient, onStatus: (String
                 onStatus("AI settings saved")
                 testStatus = "saved"
             }) { Text("Save") }
-            OutlinedButton(onClick = {
+            MaaOutlinedButton(onClick = {
                 testStatus = "testing…"
                 scope.launch {
                     val result = withContext(Dispatchers.IO) {

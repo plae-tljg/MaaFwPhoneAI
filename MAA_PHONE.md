@@ -26,13 +26,13 @@ tests and known issues.
 | **M1** — in-app brain + deterministic pipeline | ✅ proven for `open settings` | DB → resolver → compiler → `RunPlanPayload` → privileged runner; no AIDL change |
 | **M3/M3.2** — Assistant UI + bootstrap AI + pipeline import | ⚠️ built and installed; run #2 actually liked the video but the LLM verifier false-negatived it | Compose Assistant, live preview, Review, Data, Logs, Settings; native importer; strict final verify is nondeterministic (3 true / 2 false on the same screenshot) |
 | **M2** — tile / notification / float ball / queue / pause | ⏳ not implemented on Android | prototype has the semantics; Android currently submits all steps in one plan |
-| **M4** — on-device promotion/flywheel | ⏳ not closed | no verified on-device proposal has been approved and replayed with `path='pipeline'`, `ai_cost=0` |
+| **M4** — on-device promotion/flywheel | ⏳ close | proposal #12 (AI-authored native clock graph) Test-replayed in run #42 with `path='pipeline'`, `verified=1` and a real OCR postcondition; approval and the imported MaaMCP workflow are still open |
 
-The immediate next move is **not** to make the bootstrap tap harder. It is to
-author a native Bilibili pipeline with **MaaMCP + Everything-Maa**, import it
-via the Assistant, review it and replay it with a real postcondition. See
+The immediate next move is still to author/import a real workflow with
+**MaaMCP + Everything-Maa**, review it and replay it with a deterministic
+postcondition; the verifier/OCR blockers are now fixed. See
 [`../docs/AUTHORING.md`](../docs/AUTHORING.md) and
-[`../docs/STATUS.md`](../docs/STATUS.md) §5.
+[`../docs/STATUS.md`](../docs/STATUS.md) §2i/§5.
 
 ## 2. APK artifacts
 
@@ -188,10 +188,12 @@ packaging fixes and the added brain.
    - A verified AI run already creates a candidate `pipeline_versions` row
      plus a pending `pipeline_new` proposal; the import button is for
      externally authored MaaFW pipeline JSON.
-   - The runner now compiles the whole definition to one MaaFW graph task
-     (`next`/`on_error` preserved for native fragments) and evaluates `pixel`
-     postconditions after replay; `element`/`screen_text`/`file_count` are
-     still skipped pending native recognition-detail wiring.
+   - The runner compiles the whole definition to one MaaFW graph task
+     (`next`/`on_error` preserved for native fragments). Replay and Review
+     Test replay evaluate `pixel`, `element`, `screen_text`, bare MaaFW
+     recognition maps and `file_count`; run #42 verified proposal #12 with a
+     real OCR hit. Unsupported types are still reported as skipped, not
+     false-passed.
 4. Runs #4 and #7 each created a candidate `pipeline_versions` row and a
    pending proposal; review/approve them in the Review tab.
 5. Correct next test is the **native pipeline import** path:
@@ -199,9 +201,9 @@ packaging fixes and the added brain.
    `/sdcard/Android/data/com.aliothmoon.maafw.maaphone/files/brain/imports/`,
    press **Import MaaMCP pipeline.json**, review, approve, replay.
 6. First-time AI remains model-verified by design (there is no pipeline yet);
-   once a candidate is approved into a live pipeline, add/require a
-   deterministic postcondition (pixel/colour or a MaaFW `Custom` node) for
-   replay.
+   candidate Test replay now uses a deterministic postcondition when present
+   (`pixel`/`element`/`screen_text`/recognition/`file_count`); prefer a
+   deterministic postcondition before approving a version.
 
 ### 5.4 Live preview / background mode
 
@@ -251,13 +253,16 @@ Known first checks:
 - **No Android step-wise pause/queue**: `BrainRunner` sends all compiled
   steps in one plan; M2 must submit one step per `startRun`, persist
   `runs.progress_json`, and add the queue/Do-now/Cancel surfaces.
-- **No on-device postcondition verifiers yet**: `pixel`, `file_count`,
-  `element`, `screen_text` need MaaFW `Custom`/Agent nodes before
-  `verified` is meaningful for pipeline runs.
-- **Bootstrap AI is coordinate-based**: no OCR element list; point
-  trajectories are not the final learning artifact. It also only guards
-  repeated `locate` taps, not model-supplied `tap` points, and run #2 used a
-  pre-existing search-history/suggestion chip instead of typing `114514`.
+- **Postcondition coverage is still thin**: `pixel`/`element`/`screen_text`/
+  recognition are wired and verified for proposal #12, and `file_count` is
+  implemented, but imported pipelines often ship `postcondition={}` and the
+  `file_count` path has not been exercised on a camera scenario yet.
+- **Bootstrap AI is still point-driven**: it now receives real MaaFW
+  OCR/TemplateMatch/ColorMatch observations and the OCR models ship with the
+  PI, but its planner output is still coordinate trajectories; those are not
+  the final learning artifact. It also only guards repeated `locate` taps,
+  not model-supplied `tap` points, and run #2 used a pre-existing
+  search-history/suggestion chip instead of typing `114514`.
 - **Model verification is nondeterministic**: on the same final screenshot
   it returned 3 true / 2 false. Do not use it as the only promotion gate;
   that is the immediate correctness bug (ADR-025).

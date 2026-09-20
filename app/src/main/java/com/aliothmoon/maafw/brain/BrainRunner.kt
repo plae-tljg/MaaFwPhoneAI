@@ -57,6 +57,7 @@ class BrainRunner(
         val startedAt = System.currentTimeMillis()
         val runId = db.startRun(goal)
         val (pipeline, score) = resolved
+        val fileCountBefore = Verifier.fileCountBaseline(pipeline.postconditionJson)
         val compiled = Compiler.compile(db, pipeline)
         if (compiled.nodes.isEmpty()) {
             val message = "Pipeline '${pipeline.name}' has no runnable steps."
@@ -95,7 +96,12 @@ class BrainRunner(
                     }
                     var outcome = Verifier.Outcome(false, true, "{}")
                     if (success) {
-                        outcome = verifyPostcondition(runId, pipeline.postconditionJson)
+                        outcome = verifyPostcondition(
+                            runId = runId,
+                            postconditionJson = pipeline.postconditionJson,
+                            appId = pipeline.appId,
+                            fileCountBefore = fileCountBefore,
+                        )
                         if (outcome.applicable && !outcome.ok) {
                             success = false
                             message += " Postcondition failed."
@@ -157,11 +163,18 @@ class BrainRunner(
     }
 
     /**
-     * Pixel postconditions are sampled from a fresh screenshot, with retries for
-     * short animations. Element/screen_text/file_count are intentionally
-     * reported as skipped until their Android primitives are wired.
+     * Postconditions are evaluated against fresh runtime evidence, with retries
+     * for short animations. `element` / `screen_text` use MaaFW's recognition
+     * bridge, `file_count` uses the baseline captured before the run, and
+     * `pixel` samples a fresh screenshot. Unknown types are reported as
+     * skipped instead of false-passing.
      */
-    private suspend fun verifyPostcondition(runId: Long, postconditionJson: String): Verifier.Outcome {
+    private suspend fun verifyPostcondition(
+        runId: Long,
+        postconditionJson: String,
+        appId: Long?,
+        fileCountBefore: Int?,
+    ): Verifier.Outcome {
         var last = Verifier.Outcome(
             true,
             false,
@@ -169,12 +182,41 @@ class BrainRunner(
         )
         for (attempt in 0 until 3) {
             val shot = captureVerificationShot(runId, attempt)
-            val outcome = Verifier.verify(shot, postconditionJson)
+            val evidence = Verifier.Evidence(
+                screenshotPath = shot,
+                fileCountBefore = fileCountBefore,
+                elementLocator = { name -> elementLocator(appId, name) },
+                recognize = { type, params -> recognitionDirect(type, params) },
+            )
+            val outcome = Verifier.verify(evidence, postconditionJson)
             if (outcome.skipped || outcome.ok) return outcome
             last = outcome
             delay(700)
         }
         return last
+    }
+
+    private fun elementLocator(appId: Long?, name: String): JSONObject? {
+        if (appId == null || name.isBlank()) return null
+        return db.rows(
+            "SELECT locator_json FROM elements WHERE app_id=? AND name=? AND status='live'",
+            arrayOf<Any?>(appId, name),
+        ).firstOrNull()?.optString("locator_json")
+            ?.takeIf { it.isNotBlank() }
+            ?.let { raw -> runCatching { JSONObject(raw) }.getOrNull() }
+    }
+
+    /**
+     * Run one MaaFW recognition on the controller's cached frame. The caller
+     * has just executed a Screencap node, so the cache is the same frame the
+     * pixel verifier would sample.
+     */
+    private suspend fun recognitionDirect(type: String, params: JSONObject): JSONObject? {
+        val service = servicePort ?: return null
+        val raw = runCatching {
+            service.useService { it.recognitionDirect(type, params.toString()) }
+        }.getOrNull() ?: return null
+        return runCatching { JSONObject(raw) }.getOrNull()
     }
 
     /**
@@ -194,7 +236,12 @@ class BrainRunner(
         val pipeline = candidate.optJSONObject("pipeline")
             ?: return GoalResult("bad_candidate", "Proposal #$proposalId has no pipeline.")
         val candidateElements = candidate.optJSONObject("elements") ?: JSONObject()
-        val native = PipelineGraph.migrateDefinition(pipeline.toString(), candidateElements)
+        // The candidate wrapper is {pipeline:{graph:{...}}, elements:{...}};
+        // migrate the graph/step definition, not the wrapper object.
+        val rawDefinition = pipeline.optJSONObject("graph")?.toString()
+            ?: pipeline.optJSONArray("steps")?.toString()
+            ?: pipeline.toString()
+        val native = PipelineGraph.migrateDefinition(rawDefinition, candidateElements)
             ?: return GoalResult("bad_candidate", "Proposal #$proposalId has no native graph.")
         val definitionJson = native.graph.toString()
         val pipelineId = row.opt("target_pipeline_id")?.takeIf { it != JSONObject.NULL }?.toString()?.toLongOrNull()
@@ -208,6 +255,7 @@ class BrainRunner(
         }
         val candidateGoal = pipeline.optString("goal").ifBlank { "proposal $proposalId" }
         val postconditionJson = pipeline.optJSONObject("postcondition")?.toString() ?: "{}"
+        val fileCountBefore = Verifier.fileCountBaseline(postconditionJson)
         val pipelineRow = PipelineRow(
             id = pipelineId ?: 0L,
             appId = appId,
@@ -263,7 +311,12 @@ class BrainRunner(
                     }
                     var outcome = Verifier.Outcome(false, true, "{}")
                     if (success) {
-                        outcome = verifyPostcondition(runId, postconditionJson)
+                        outcome = verifyPostcondition(
+                            runId = runId,
+                            postconditionJson = postconditionJson,
+                            appId = appId,
+                            fileCountBefore = fileCountBefore,
+                        )
                         when {
                             outcome.applicable && outcome.ok -> message += " Postcondition passed."
                             outcome.applicable -> {

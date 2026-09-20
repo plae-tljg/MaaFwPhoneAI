@@ -165,11 +165,7 @@ object PipelineGraph {
         val trimmed = definitionJson.trim()
         if (trimmed.isEmpty()) return null
         runCatching { JSONObject(trimmed) }.getOrNull()?.let { obj ->
-            val names = obj.keys().asSequence().toList()
-            val first = names.firstOrNull()?.let { obj.optJSONObject(it) }
-            if (first != null && (first.has("recognition") || first.has("action") || first.has("next"))) {
-                return Native(obj, deriveEntry(obj))
-            }
+            flattenLegacyGraph(obj)?.let { return it }
         }
         val array = runCatching { JSONArray(trimmed) }.getOrNull() ?: return null
         if (array.length() == 0) return null
@@ -183,7 +179,7 @@ object PipelineGraph {
             if (fragment != null) {
                 migratedFragments = true
                 val name = item.optString("name").takeIf { it.isNotBlank() } ?: "brain_node_$i"
-                graph.put(name, fragment)
+                graph.put(name, flattenLegacyNode(fragment))
                 names += name
             } else {
                 actionSteps.put(item)
@@ -191,8 +187,82 @@ object PipelineGraph {
         }
         if (migratedFragments) {
             if (graph.length() == 0) return null
+            if (validate(graph) != null) return null
             return Native(graph, deriveEntry(graph))
         }
         return fromActionSteps(actionSteps, elements)
+    }
+
+    /**
+     * One-time repair for graphs written before the flat-native contract.
+     * Earlier proposals used MaaFW fields nested as
+     * `{"action":{"type":"StartApp","param":{"package":"..."}}}`; the runtime
+     * compiler deliberately does not normalize at read time, so those rows are
+     * flattened here during the DB migration instead.
+     */
+    private fun flattenLegacyGraph(graph: JSONObject): Native? {
+        if (graph.length() == 0) return null
+        val out = JSONObject()
+        for (name in graph.keys()) {
+            val node = graph.optJSONObject(name) ?: return null
+            out.put(name, flattenLegacyNode(node))
+        }
+        if (validate(out) != null) return null
+        return Native(out, deriveEntry(out))
+    }
+
+    private fun flattenLegacyNode(node: JSONObject): JSONObject {
+        val out = JSONObject(node.toString())
+
+        val nestedRecognition = out.opt("recognition")
+        if (nestedRecognition is JSONObject) {
+            val type = nestedRecognition.optString("type").trim()
+            out.put("recognition", recognitionName(type.ifBlank { "OCR" }))
+            copyParams(out, nestedRecognition.optJSONObject("param"))
+        }
+
+        val nestedAction = out.opt("action")
+        if (nestedAction is JSONObject) {
+            val type = nestedAction.optString("type").trim()
+                .ifBlank { nestedAction.optString("action").trim() }
+            out.put("action", actionName(type.ifBlank { "DoNothing" }))
+            copyParams(out, nestedAction.optJSONObject("param"))
+        }
+
+        return out
+    }
+
+    private fun copyParams(target: JSONObject, params: JSONObject?) {
+        if (params == null) return
+        for (key in params.keys()) {
+            if (key == "type" || key == "param") continue
+            target.put(key, params.get(key))
+        }
+    }
+
+    private fun recognitionName(raw: String): String = when (raw.lowercase()) {
+        "ocr" -> "OCR"
+        "template", "templatematch" -> "TemplateMatch"
+        "color", "colormatch" -> "ColorMatch"
+        "directhit", "direct_hit" -> "DirectHit"
+        "featurematch", "feature_match" -> "FeatureMatch"
+        "neuralnetworkclassify", "neural_network_classify" -> "NeuralNetworkClassify"
+        "neuralnetworkdetect", "neural_network_detect" -> "NeuralNetworkDetect"
+        "custom" -> "Custom"
+        else -> raw
+    }
+
+    private fun actionName(raw: String): String = when (raw.lowercase()) {
+        "donothing", "do_nothing" -> "DoNothing"
+        "click" -> "Click"
+        "startapp", "start_app" -> "StartApp"
+        "stopapp", "stop_app" -> "StopApp"
+        "inputtext", "input_text" -> "InputText"
+        "clickkey", "click_key" -> "ClickKey"
+        "swipe" -> "Swipe"
+        "screencap" -> "Screencap"
+        "stoptask", "stop_task" -> "StopTask"
+        "custom" -> "Custom"
+        else -> raw
     }
 }

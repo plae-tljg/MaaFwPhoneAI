@@ -8,11 +8,13 @@ actual logs/hashes.
 > **One-line status:** the PC prototype proves the full method
 > (AI-once → verified pipeline → 0-token replay). On Android, M0/M1 and the
 > v1 schema/Assistant exist; deterministic `open settings` works. The
-> on-device bootstrap now logs loaded skill families, fixes numeric/Chinese
-> input, observes the screen globally, and can adapt an existing pipeline:
-> run #23 fixed the Bilibili search→like flow after UI drift and filed a
-> `pipeline_fix` proposal. Remaining work is deterministic postconditions,
-> graph-native replay and automatic healing; see §2b–§2h and §5.
+> on-device bootstrap logs loaded skill families, fixes numeric/Chinese
+> input and observes screens; it adapts existing pipelines after UI drift.
+> Deterministic recognition postconditions and graph-native Test replay are
+> now proven on-device (proposal #12, run #42, OCR hit `闹钟` 0.998). The
+> remaining big items are an imported MaaMCP/M9A workflow, version/mission
+> review surfaces, agent-IO `needs_input`, replay-K and automatic healing;
+> see §2b–§2i and §5.
 
 ## 1. Build artifacts
 
@@ -305,13 +307,65 @@ bootstrap, not the missing pipeline.
   `BrainRunner.kt` submits that graph as a single MaaFW task, so `next` /
   `on_error` are executed by MaaFW instead of flattened into isolated tasks.
   Legacy bootstrap step arrays are converted to a linear `next` chain.
-- **Pixel postconditions:** replay and Review Test replay now capture a fresh
-  frame and check `postcondition_json` (`pixel`); toggles generate a pixel
-  postcondition around the changed control. `element`/`screen_text`/
-  `file_count` are deliberately reported skipped, not false-passed.
+- **Deterministic postconditions (Android):** `Verifier.kt` now supports
+  `pixel`, `element`, `screen_text`, `file_count` and MaaFW-native bare
+  recognition maps. Replay and Review Test replay capture a fresh frame,
+  run the recognition through `RemoteService.recognitionDirect`, and record
+  the evidence; unsupported/missing postconditions are still reported as
+  skipped rather than false-passed. Toggles continue to generate a pixel
+  postcondition around the changed control.
 - **Chat-like IO direction** recorded in `docs/TODO.md` P1-8: a
   ChatGPT/Codex/opencode-style modal with option buttons and free text,
   connected to `runs.state='needs_input'`.
+
+## 2i. Deterministic replay and OCR model fix (2026-09-20 15:50 HKT)
+
+After the v1 packaging turn, ADB verification found two real blockers and
+fixed them:
+
+1. **MaaFW had no OCR model on device.** `pi.zip` only shipped
+   `resource/pipeline/maa_phone_demo.json`; every OCR call logged
+   `OCRResMgr.cpp: Failed to load det or rec: [name=] [det=0x0] [rec=0x0]`.
+   The `native OCR recognition: 185 chars` line from run #35/#36 was the
+   bridge JSON; the OCR arrays inside were empty. `proto/bundle/model`
+   (PP-OCR det/rec/keys) is now synced into `PI/brain_ocr/model/ocr`
+   by `PiAssetsConventionPlugin`, and `BrainResources.resourcePaths` loads
+   `brain_ocr` before `resource`.
+2. **Old pending proposals were not repaired.** Proposal/version #11 still
+   carried nested `{action:{type,param}}` / `{recognition:{type,param}}`
+   maps from before the flat-native contract, so Test replay returned
+   `bad_candidate`/failed. `PipelineGraph.migrateDefinition` now flattens
+   those shapes during migration, and `BrainDb` version 3 re-runs that
+   migration once for all rows/proposals (runtime compiler stays native-only).
+
+On-device evidence after the fix:
+
+```
+BrainDb user_version = 3
+proposal #11 graph -> flat {"action":"DoNothing", ...},
+                     {"action":"StartApp","package":"com.android.deskclock", ...}
+run #41  Test replay proposal #12 -> done, verified=0
+         (workflow ran; postcondition still skipped because the bare
+          recognition map was parsed after the blank-type early return)
+run #42  Test replay proposal #12 -> done, verified=1
+         verify_json = {"type":"recognition","node":"VerifyClockHome",
+           "recognition":"OCR","params":{"expected":["闹钟","时钟",
+           "计时器","Clock","Alarm"],"roi":[0,0,1280,720]},
+           "hit":true,"required_hit":true,"ok":true,
+           "box":[388,641,70,40],"algorithm":"OCR",
+           "detail":"...{\"text\":\"闹钟\",\"score\":0.998008,
+           \"box\":[388,641,70,40]}...",
+           "candidate_replay":true,"deterministic_verified":true}
+```
+
+Review cards now show the candidate goal, entry, node list, postcondition
+and linked replay runs (`run:role:success:verified`) so a human can approve
+proposal #12 from evidence rather than from the old truncated JSON preview.
+
+Android unit tests are green again (`463 tests, 0 failed, 2 skipped`):
+the AIDL `FakePrivilegedService` was missing `recognitionDirect`, Assistant
+buttons bypassed the `MaaButton`/`MaaOutlinedButton` UI convention, and a
+new `PipelineGraphLegacyMigrationTest` covers the nested-graph repair.
 
 ## 3. What is not working / not built
 
@@ -320,10 +374,10 @@ bootstrap, not the missing pipeline.
 | On-device Bilibili bootstrap is not trustworthy | Run #1 looped on direct coordinate taps (guard gap). Run #2 did like the video (pixel-proven) but the LLM verifier false-negatived it 2/5 times on the same screenshot, so no proposal was created. Run #2 also relied on an existing search-history chip instead of typing `114514`. | Add deterministic toggle postconditions (`pixel`/local check) before promotion; extend repeat guard to all tap points; add OCR/typed search. In parallel, author the native workflow with MaaMCP + Everything-Maa. |
 | Search goals now work; like/toggle still unstable | Run #4 solved a search goal and created candidate version #1 + pending proposal #1. Run #3 typed the number but looped at the like stage and was stopped by the repeat guard. | Approve/review version #1; add deterministic toggle postcondition so like replay does not depend on the LLM verifier. |
 | Android step-wise pause/queue not implemented | `BrainRunner.kt` currently submits all compiled steps in one `RunPlan`; pause/queue semantics exist in the PC prototype (`--pause-after`, `resume`, `process-queue`, `messages`), not in the Android UI. | M2: per-step `startRun`, `runs.progress_json`, queue / Do now / Cancel, notification/float-ball entry points. |
-| No on-device postcondition verifiers wired | Android can store `postcondition_json`, but deterministic runs do not yet check `pixel`/`file_count`/`element`/`screen_text`; `verified` for a pipeline run is effectively false. AI runs use only a model vision check. | Implement `Custom`/Agent nodes for verifiers or call existing verify primitives before `finishRun`. |
-| Bootstrap is coordinate-based | `AgentTools` exposes screenshots/actions but no OCR element list; Bilibili ran on points. | Add OCR/recognition observation to the bootstrap or remove it from the critical path in favor of native authoring. |
+| On-device postconditions wired but not broadly exercised | Android now checks `pixel`/`element`/`screen_text`/bare MaaFW recognition on replay and Test replay; run #42 verified proposal #12 with a real OCR hit. `file_count` is implemented but has no device scenario yet, and imported pipelines still mostly carry `{}`. | Approve/import a real workflow with a deterministic postcondition and add a camera/file-count scenario; keep unsupported types explicitly skipped. |
+| Bootstrap is still model-driven | `AgentTools` now gets per-frame MaaFW OCR/TemplateMatch/ColorMatch observations, and the OCR models are packaged, but the planner still emits point trajectories and can drift. The coordinate bootstrap stays discovery-only. | Keep native graph authoring as the product path; add the missing repeat guard for model-supplied `tap` points and keep bootstrap proposals Review-gated. |
 | Android token accounting missing | `runs.ai_cost` on Android is `0`; tokens are not parsed from chat responses. | Parse usage from the provider response; write it to `runs.ai_cost`. |
-| Version/mission UI not implemented yet | Backend wiring is in: bootstrap/import create a candidate `pipeline_versions` row linked to its source run; `approve` promotes the version/live pipeline; the PC CLI has `versions`, `missions`, `mission-create`, `mission-add`, `mission-items`. Android exposes the tables in Data but has no version-review/mission UI or mission runner yet. | Build version Review and mission UI; add mission run execution; add graph-native execution. |
+| Version Review mostly done; mission UI/runner not implemented yet | Backend wiring is in and the Android Review tab now shows goal/entry/nodes/postcondition plus linked replay runs. Missions exist in the schema and PC CLI but have no Android UI or runner. | Add mission UI + "run item" path (`runs.path='pipeline'`) and a version diff/history view on top of the existing evidence inspector. |
 | Actual MaaMCP authoring pass not run | MaaMCP is cloned/mapped and the importer exists, but no real Bilibili (or other) pipeline has been authored, imported and replayed. | Run the MaaMCP + Everything-Maa pass next. |
 | Dynamic-screen replay still unsolved in the prototype | Run #9 replay passed; a later second launch hit a different state (run #10). | Per-step assert/retry/fallback and healing proposals. |
 | Auto-healing not implemented | Failed element recognition does not yet generate `element_fix` proposals with new ROI/template/benchmark evidence. | v0.1 after replay-K gate. |
@@ -371,11 +425,14 @@ version/mission UI are the remaining product work.
 
 ### P0 — produce the first verified on-device reusable workflow
 
-0. **Replace model-only toggle verification on Android** with a
-   deterministic local check (pixel colour or equivalent MaaFW `Custom`
-   node), because the same final screenshot produced 3 true / 2 false from
-   the LLM verifier. Until then, no promotion should trust the model verdict
-   alone.
+> **Updated 2026-09-20 15:50:** Android now has deterministic
+> `pixel`/`element`/`screen_text`/recognition checks, the OCR model is
+> bundled, and Review Test replay verified proposal #12 in run #42.
+> No promotion trusted a model verdict alone for that replay.
+
+0. ~~**Replace model-only toggle verification on Android**~~ — **done**:
+   deterministic postconditions are wired and recognition-verified; keep the
+   LLM verifier only for first-run bootstrap acceptance.
 1. Run MaaMCP against the phone with the Everything-Maa workflow-build /
    pipeline-guide / pipeline-generate skills.
 2. Author the Bilibili workflow natively in the M9A pattern

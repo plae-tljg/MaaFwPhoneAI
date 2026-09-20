@@ -50,6 +50,16 @@ class PiAssetsConventionPlugin : Plugin<Project> {
                         logger.warn("no PI configured (pi.profile in local.properties or PI_PROFILE), the build output will not contain a PI")
                     }
                 }
+                // The MaaFW OCR controller needs PP-OCR model files. They are
+                // vendored in proto/bundle/model and packed into a dedicated
+                // resource root so brain pipelines can use OCR without an
+                // external PI carrying the models.
+                val bundledModels = rootProject.file("proto/bundle/model")
+                if (bundledModels.isDirectory) {
+                    from(bundledModels) {
+                        into("brain_ocr/model")
+                    }
+                }
             }
 
             val packPiArchive = tasks.register<Zip>("packPiArchive") {

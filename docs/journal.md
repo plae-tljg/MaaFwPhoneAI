@@ -113,3 +113,39 @@
 - 不要提交 `.env`、keystore、SDK、`00ref/`、APK（release 走 GitHub Releases）。
 - 所有 AI 生成的图都必须能在 Review 里 Test replay，再人工 Approve。
 - 历史 run/proposal 是证据，不要为了“好看”清库。
+
+## 7. 续接：确定性回放、OCR 模型与第三次讨论后的修正
+
+继续 DeepSeek Harness 的 `MaaMCP app bugs and agent IO` 会话之后，先用
+`adb` 重新核对了真机 DB、APK 和 MaaFW 日志，发现并修了三件事：
+
+1. **`native OCR recognition: 185 chars` 不代表 OCR 成功。**
+   `pi.zip` 里只有 demo pipeline，没有 PP-OCR 模型；MaaFW 每次都记
+   `OCRResMgr: Failed to load det or rec: [name=] [det=0x0] [rec=0x0]`，
+   返回的 JSON 只是空 `all/best`。现已把 `proto/bundle/model` 打包到
+   `PI/brain_ocr/model/ocr`，`BrainResources.resourcePaths` 先加载
+   `brain_ocr`。run #42 的识别证据里才第一次出现真实命中：
+   `闹钟 score=0.998008, box=[388,641,70,40]`。
+
+2. **裸 MaaFW recognition postcondition 的判断顺序写错了。**
+   `Verifier.verify` 先把 `type` 为空当 `none` 跳过，导致 AI 写的
+   `{node,recognition,expected,...}` 永远不执行。run #41 节点全过、
+   `verified=0`，而 `verify_json` 是 `{"type":"none","skipped":true}`；
+   调整分支后 run #42 `verified=1`。这说明“动作跑通”和“后置条件真的
+   检查了”必须分开记。
+
+3. **旧 proposal 需要在迁移里一次性修形，而不是运行时 normalization。**
+   第三次讨论前生成的 proposal #11 还带
+   `{"action":{"type":...,"param":{...}}}`。v2 迁移原样跳过，Test replay
+   一直失败。现在 `PipelineGraph.migrateDefinition` 在迁移时拍平，DB
+   v3 对全部 rows/proposals 跑一次；编译器仍只接受 native graph。
+
+Review 页现在显示候选图的 goal/entry/节点/后置条件/关联 run 证据，Human
+Review 可以直接看 run #42 的 `verified=1` 再决定是否 approve proposal #12。
+Android 单测恢复到 `463 tests, 0 failed, 2 skipped`：补了 `VerifierTest`、
+`PipelineGraphLegacyMigrationTest`，并修正了缺少 AIDL `recognitionDirect`
+的 `FakePrivilegedService` 与 Assistant 直用 M3 `Button` 的旧问题。
+
+下一步仍然是导入真实 MaaMCP/M9A workflow、Mission UI、agent-IO
+`needs_input` 和 replay-K/healing；不要在设备测试里再用“日志出现某几个
+字”替代真实后置条件证据。

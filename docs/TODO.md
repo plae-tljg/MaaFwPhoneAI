@@ -1,12 +1,12 @@
 # TODO / status ledger
 
-Snapshot: **2026-09-20 10:15 HKT**, after the v1 input/toggle/UI fixes and
-the `search 阿米诺斯` / `search 350234 → like` live tests.
+Snapshot: **2026-09-20 15:50 HKT**, after the deterministic-postcondition /
+OCR-model / legacy-graph repair work. The APK hash in this snapshot is not
+recorded because debug builds are local-only; the on-device evidence is run
+#42 and the repaired proposal #11 described below.
 
-Current APK: `android/dist/maa-phone-v1-debug.apk`
-sha256 `e673b57f0f6bdd50b18ebd033efb78e2b6048c55977ba544a32bfe9ad9c7e9e1`
-(pushed to `/sdcard/Download/`; uninstall old app first because v1 has no DB
-migration).
+Current source debug build: install over v1; DB v3 migration repairs legacy
+graphs in place. The previous `maa-phone-v1-debug.apk` hash is obsolete.
 
 ## 0. Recently completed
 
@@ -59,10 +59,35 @@ migration).
   stored as Review proposals and compiled/test-replayed by the graph-native
   runner. No Termux / embedded Python is required.
 - **Native graph storage contract**: `definition_json` now stores MaaFW-native
-  node maps directly, with an explicit `entry`; DB v2 migrates old linear rows/
-  proposals once. Nested `action:{type,param}` / `recognition:{type,param}`
-  shapes are rejected, not normalized at runtime.
+  node maps directly, with an explicit `entry`; DB v3 migrates old linear rows/
+  proposals and repairs legacy nested `action:{type,param}` /
+  `recognition:{type,param}` shapes once. Nested shapes are rejected at runtime,
+  not normalized there.
 - Proto tests: **34 passed**.
+- **Deterministic Android postconditions**: `Verifier` now supports `pixel`,
+  `element`, `screen_text`, `file_count`, and bare MaaFW recognition maps
+  (`{node, recognition, expected, roi}`). Element/screen-text checks use
+  `RemoteService.recognitionDirect(...)`; file-count captures a baseline
+  before the pipeline starts.
+- **OCR model bundle**: `proto/bundle/model` (PP-OCR det/rec/keys) is packed
+  into `PI/brain_ocr` and added to brain resource paths. Before this the
+  recognition bridge returned JSON with empty OCR detail; the MaaFW log showed
+  `OCRResMgr: Failed to load det or rec: [name=]`.
+- **Test replay #42 verified**: proposal #12 (7-node AI-authored graph:
+  StartApp → OCR verify → DoNothing) replayed with
+  `verified=1`; evidence JSON contains a real OCR hit
+  `{"text":"闹钟","score":0.998008,"box":[388,641,70,40]}`.
+- **DB v3 migration repair**: legacy nested action/recognition maps
+  (`{"action":{"type":...,"param":{...}}}`) are flattened once at migration
+  time. On-device proposal/version #11 were repaired; runtime compiler stays
+  native-only.
+- **Review evidence inspector**: Review cards now show goal, entry, node
+  count/first nodes, postcondition, and linked replay runs
+  `id:role:success:verified` before Approve/Reject.
+- **Android unit tests are green**: `463 tests`, `0 failed`, `2 skipped`.
+  This also fixes the stale `FakePrivilegedService` (missing new AIDL
+  `recognitionDirect`) and routes Assistant buttons through `MaaButton` /
+  `MaaOutlinedButton`.
 
 ## 1. P0 — immediate correctness and product surface
 
@@ -70,10 +95,10 @@ migration).
 |---|---|---|---|
 | P0-1 | Verify UI keyboard fix on device | Goal input stays visible while IME is open; type a goal and see the full field. | source fixed; build installed; needs manual/device check |
 | P0-2 | Stop using HOME as virtual-display normalization | Run #10 showed every screenshot black after `key home`: the launcher on the secondary display does not render, and HOME is global. MaaFwApp/MAA-Meow resolve packages with `PackageManager.getLaunchIntentForPackage` and launch them directly; we sync launchable apps into the `apps` registry and launch by package. Run #12 (`open the finance manager app`) now passes. HOME/drawer stays an optional foreground-only test. | ✅ done (run #12 verified) |
-| P0-3 | Version Review UI | List candidate `pipeline_versions`, show graph/steps/evidence, approve/reject; approval updates live pipeline. | partial: Review lists proposals with Test replay / Approve / Reject; candidate graph/evidence inspector still missing |
-| P0-4 | Deterministic postcondition for approved pipelines | First-time AI may use the LLM verifier; after approval a pipeline replay must use `pixel`/`element`/`file_count`/`screen_text`/Custom. | Android `pixel` verifier wired on live replay + candidate Test replay; `element`/`screen_text`/`file_count` still pending; toggle runs generate a pixel postcondition from the post-tap frame. |
+| P0-3 | Version Review UI | List candidate `pipeline_versions`, show graph/steps/evidence, approve/reject; approval updates live pipeline. | mostly done: Review cards now show goal/entry/nodes/postcondition and linked replay runs; a full diff/version history view is still missing |
+| P0-4 | Deterministic postcondition for approved pipelines | First-time AI may use the LLM verifier; after approval a pipeline replay must use `pixel`/`element`/`file_count`/`screen_text`/Custom. | ✅ recognition-style (`element`/`screen_text`/bare MaaFW map) wired and device-verified by run #42; `pixel` and `file_count` wired, file_count still needs a device scenario test. |
 | P0-5 | Mission UI + runner | Create missions, add pipeline/version items, run an item into `runs(path='pipeline')`; failures become evidence. | schema/backend ready; UI/runner not done |
-| P0-6 | Graph-native execution | Execute stored `next`/`on_error`/anchors as a graph; stop flattening/renaming nodes. | partial: Compiler emits one graph and BrainRunner submits one MaaFW task; legacy linear steps are chained with `next`. Conditional graph authoring and a tested imported native graph still pending. |
+| P0-6 | Graph-native execution | Execute stored `next`/`on_error`/anchors as a graph; stop flattening/renaming nodes. | ✅ compiler/runner graph-native and conditional AI-authored graph #12 Test replay verified (run #42); a tested externally imported M9A/Bilibili graph is still pending. |
 
 ## 2. P1 — bootstrap reliability and AI maintenance
 
@@ -86,7 +111,7 @@ migration).
 | P1-5 | Search-field recovery polish | Auto-recovery currently types query on repeated field taps; make it logged/visible and test with several apps. | implemented, needs test |
 | P1-6 | Register apps/hints for finance and other test targets | Add `<queries><intent MAIN/LAUNCHER>` so the catalog sees all launchable apps; verify `com.anonymous.financemanager` and other user apps. | ✅ done (run #12); keep aliases/hints updated as needed |
 | P1-8 | Chat-like agent IO with approve/ask | A ChatGPT/Codex/opencode-like thread/modal: assistant can show a plan or question, offer option buttons (Yes/No/Apply/Cancel) plus a free-text field, let the user answer, and continue the run from `needs_input`. | `messages` table + Assistant UI exist; option/free-text modal and continuation are not built |
-| P1-7 | Repeat/loop guard policy | Distinguish “repeat tap without progress” from legitimate multi-step waits; fail early with a useful message. | implemented as `agent_repeat_limit` (empty/failed results + identical action signatures), plus the three-tap/screen-recognition point guard; tune with real runs |
+| P1-7 | Repeat/loop guard policy | Distinguish “repeat tap without progress” from legitimate multi-step waits; fail early with a useful message. | implemented as `agent_repeat_limit` (empty/failed results + identical action signatures), plus the three-tap/screen-recognition point guard; native OCR observations are now fed by packaged models, but model-supplied `tap` points still need the same guard |
 
 ## 3. P2 — authoring, healing and trust
 
@@ -114,6 +139,10 @@ migration).
   misread a full-screen icon; the current mitigations are focused crop,
   auto search recovery, retries and early failure. This is accepted for
   first-run discovery, not for deterministic replay.
+- Fixed: MaaFw OCR had no model files on device. `PI/brain_ocr/model/ocr`
+  now ships from `proto/bundle/model`; run #42 proves real OCR hits again.
+- Fixed: pending legacy graph proposals (e.g. #11) that were written before
+  the flat-native contract are repaired by the v3 DB migration.
 
 ## 5. Definition of done for the next demo
 

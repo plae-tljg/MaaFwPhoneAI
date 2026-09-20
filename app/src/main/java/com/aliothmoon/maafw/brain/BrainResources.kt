@@ -29,11 +29,12 @@ object BrainResources {
     fun resourcePaths(context: Context, db: BrainDb): List<String> {
         val version = bundleVersion(db)
         val learned = "brain/res_$version"
-        return if (version > 0 && File(piRoot(context), learned).isDirectory) {
-            listOf("resource", learned)
-        } else {
-            listOf("resource")
-        }
+        val paths = mutableListOf<String>()
+        // Packed OCR model root (proto/bundle/model -> PI/brain_ocr/model).
+        if (File(piRoot(context), "brain_ocr").isDirectory) paths += "brain_ocr"
+        paths += "resource"
+        if (version > 0 && File(piRoot(context), learned).isDirectory) paths += learned
+        return paths
     }
 
     fun saveTemplate(context: Context, version: Int, name: String, source: String,

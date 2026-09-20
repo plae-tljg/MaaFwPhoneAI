@@ -100,6 +100,7 @@ open class FakePrivilegedService : RemoteService {
     }
     override fun isRunning(): Boolean = running
     override fun maaVersion(): String = "fake"
+    override fun recognitionDirect(recoType: String?, recoParamJson: String?): String? = null
     override fun testUnlock(credential: String?): Int = unlockResult
     override fun watchdogState(): Int = 0
     override fun watchdogTargetPackage(): String = ""

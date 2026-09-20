@@ -34,7 +34,10 @@ class BrainDb(context: Context) : SQLiteOpenHelper(context.applicationContext, D
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        if (oldVersion < 2) migrateToNativeGraph(db)
+        // v3 fixes legacy nested action/recognition maps that the v2 migration
+        // copied verbatim. Migration is still the only place this conversion
+        // happens; the runtime compiler remains native-only.
+        if (oldVersion < 3) migrateToNativeGraph(db)
     }
 
     /**
@@ -570,6 +573,6 @@ class BrainDb(context: Context) : SQLiteOpenHelper(context.applicationContext, D
 
     companion object {
         private const val DB_NAME = "brain.db"
-        private const val DB_VERSION = 2
+        private const val DB_VERSION = 3
     }
 }
