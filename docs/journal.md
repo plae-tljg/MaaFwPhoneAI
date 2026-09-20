@@ -215,3 +215,25 @@ mission 队列/定时、带确定性 postcondition 的 imported candidate 跑 mi
 清理：为真机测试临时加的 debug extra、debug-only exported manifest 和
 debugSeedQuestion/debugImport 已全部删除；产品 AssistantActivity 仍然
 `exported=false`。Android 单测 466/466。
+
+
+## 10. 预览黑屏与 “Not running” 的根因/修复（2026-09-20 傍晚）
+
+Assistant 的 Run tab 一开始直接用裸 `MaaPreviewSurface`，没接 MaaFwApp 的
+`TasksPreviewSection` 生命周期：
+
+- SurfaceView 重建时 `surfaceDestroyed` 把 native preview target 置空，
+  但原来的回调路径不一定补发新的 `surfaceAvailable`；文件里最新截图还在，
+  所以下方 cell 正常、上方 live cell 黑。
+- 状态蒙层只看 `RunnerPort.phase`。我们不会在 run 结束后立刻停虚拟屏，
+  AppWatchdog 还在 WATCHING，于是画面明明还在，却盖着 “Not running”。
+
+修复直接复用原模块：`rememberMovablePreview` + `LivePreview` +
+`FullscreenPreview` + `MaaTouchOverlay`。额外：
+- `MaaPreviewSurface` 在 `setFixedSize` 后补一次 `onSurfaceAvailable`，
+  兜住不触发第二次 `surfaceChanged` 的设备；
+- 状态改成 `runnerBusy || watchdogState == WATCHING`，并显示真实 watchdog 徽标；
+- 透明点击层保证 inline 预览可点开全屏；
+- `rememberSaveable` + `configChanges` 让全屏横屏请求不会重建 Activity 后丢状态。
+
+真机确认：点预览会进入全屏，UI dump 能看到 “退出全屏” 按钮。

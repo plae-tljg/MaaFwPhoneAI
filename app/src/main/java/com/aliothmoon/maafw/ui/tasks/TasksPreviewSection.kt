@@ -140,6 +140,8 @@ internal fun LivePreview(
     modifier: Modifier = Modifier,
     /** 卡片在 window 中的位置，给画中画的进入动画用 */
     onBoundsChanged: ((Rect?) -> Unit)? = null,
+    /** Assistant 复用实时预览时不需要 idle/watchdog 蒙层，画面本身才是重点 */
+    showStatus: Boolean = true,
 ) {
     // 尺寸靠 aspectRatio 算而不是 BoxWithConstraints：后者是 SubcomposeLayout，
     // 测量期的首次组合撞上 movableContent 搬家会拿到已停用的节点（Apply is called on
@@ -160,12 +162,22 @@ internal fun LivePreview(
         MaaCardSurface(modifier = cardModifier.then(boundsReporting).maaClickable(onClick = onEnterFullscreen)) {
             Box(Modifier.fillMaxSize()) {
                 content()
-                PreviewStatusMask(surfaceReady = surfaceReady, running = running)
-                WatchdogStatusBadge(
-                    state = watchdogState,
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(MaaDesignTokens.Spacing.sm),
+                if (showStatus) {
+                    PreviewStatusMask(surfaceReady = surfaceReady, running = running)
+                    WatchdogStatusBadge(
+                        state = watchdogState,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(MaaDesignTokens.Spacing.sm),
+                    )
+                }
+                // SurfaceView may swallow pointer events before they reach the
+                // card's clickable modifier. Keep a transparent click layer
+                // above the live frame so "click to expand" still works.
+                Box(
+                    Modifier
+                        .matchParentSize()
+                        .maaClickable(indication = false, onClick = onEnterFullscreen),
                 )
             }
         }

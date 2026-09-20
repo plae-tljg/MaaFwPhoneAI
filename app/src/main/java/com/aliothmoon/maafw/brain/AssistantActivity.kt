@@ -47,6 +47,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,14 +56,20 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.aliothmoon.maafw.privileged.PermissionGateway
 import com.aliothmoon.maafw.privileged.PrivilegedServicePort
+import com.aliothmoon.maafw.privileged.WatchdogState
 import com.aliothmoon.maafw.runner.PreviewPort
 import com.aliothmoon.maafw.runner.RunnerPort
+import com.aliothmoon.maafw.runner.isBusy
+import com.aliothmoon.maafw.session.PreviewTouchAction
 import com.aliothmoon.maafw.settings.AppSettingsManager
 import com.aliothmoon.maafw.theme.MaaFwTheme
 import com.aliothmoon.maafw.ui.components.MaaButton
 import com.aliothmoon.maafw.ui.components.MaaOutlinedButton
-import com.aliothmoon.maafw.ui.components.MaaPreviewSurface
+import com.aliothmoon.maafw.ui.tasks.FullscreenPreview
+import com.aliothmoon.maafw.ui.tasks.LivePreview
+import com.aliothmoon.maafw.ui.tasks.rememberMovablePreview
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -168,6 +175,7 @@ class AssistantActivity : ComponentActivity() {
         db = BrainDb(this)
         runnerPort = GlobalContext.get().get<RunnerPort>()
         val servicePort = GlobalContext.get().get<PrivilegedServicePort>()
+        val permissionGateway = GlobalContext.get().get<PermissionGateway>()
         previewPort = GlobalContext.get().get<PreviewPort>()
         deepseek = DeepSeekClient(db)
         agent = AgentRunner(this, db, AgentTools(this, db, runnerPort, servicePort), deepseek)
@@ -183,6 +191,8 @@ class AssistantActivity : ComponentActivity() {
                     agent = agent,
                     deepseek = deepseek,
                     previewPort = previewPort,
+                    runnerPort = runnerPort,
+                    permissionGateway = permissionGateway,
                     pendingGoal = pendingGoal,
                     pendingMaintain = pendingMaintain,
                     onGoalConsumed = { pendingGoal = null; pendingMaintain = false },
@@ -233,6 +243,8 @@ private fun AssistantApp(
     agent: AgentRunner,
     deepseek: DeepSeekClient,
     previewPort: PreviewPort,
+    runnerPort: RunnerPort,
+    permissionGateway: PermissionGateway,
     pendingGoal: String?,
     pendingMaintain: Boolean,
     onGoalConsumed: () -> Unit,
@@ -248,6 +260,29 @@ private fun AssistantApp(
     val settings = remember { GlobalContext.get().get<AppSettingsManager>() }
     val resolution by settings.resolutionPreference.collectAsState()
     val pendingQuestion by agent.pendingQuestion.collectAsState()
+    val previewMarkers by previewPort.markers.collectAsState()
+    val runnerState by runnerPort.state.collectAsState()
+    val watchdogState by permissionGateway.watchdogState.collectAsState()
+    val runnerBusy = runnerState.phase.isBusy
+    // Preview frames can outlive a finished runner: MaaFwApp keeps the
+    // virtual display (and AppWatchdog) alive until the next start/stop.
+    // Calling that state "Not running" over a live picture is contradictory.
+    val previewActive = runnerBusy || watchdogState == WatchdogState.WATCHING
+    var previewSurfaceReady by remember { mutableStateOf(false) }
+    var previewFullscreen by rememberSaveable { mutableStateOf(false) }
+    // Reuse MaaFwApp's movable preview wiring: it owns the Surface dedup/detach
+    // contract and its touch-marker overlay. The raw MaaPreviewSurface used
+    // before this could stay black after the SurfaceView was recreated.
+    val previewContent = rememberMovablePreview(
+        resolution = resolution.resolution,
+        markers = { previewMarkers },
+        onSurfaceCreated = { previewSurfaceReady = true },
+        onSurfaceAvailable = { surface -> previewPort.attachSurface(surface) },
+        onSurfaceDestroyed = {
+            previewSurfaceReady = false
+            previewPort.detachSurface()
+        },
+    )
     var tab by remember { mutableStateOf(AssistantTab.ASSISTANT) }
     var goal by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("Ready.") }
@@ -450,8 +485,13 @@ private fun AssistantApp(
             when (tab) {
                 AssistantTab.ASSISTANT -> AssistantTabContent(
                     db = db,
-                    previewPort = previewPort,
                     resolution = resolution,
+                    previewContent = previewContent,
+                    previewFullscreen = previewFullscreen,
+                    previewActive = previewActive,
+                    watchdogState = watchdogState,
+                    previewSurfaceReady = previewSurfaceReady,
+                    onEnterFullscreen = { previewFullscreen = true },
                     goal = goal,
                     onGoalChange = { goal = it },
                     status = status,
@@ -573,6 +613,21 @@ private fun AssistantApp(
             )
         }
     }
+
+    if (previewFullscreen) {
+        FullscreenPreview(
+            resolution = resolution.resolution,
+            onExit = { previewFullscreen = false },
+            onTouch = { x, y, action, contact ->
+                when (action) {
+                    PreviewTouchAction.Down -> previewPort.touchDown(x, y, contact)
+                    PreviewTouchAction.Move -> previewPort.touchMove(x, y, contact)
+                    PreviewTouchAction.Up -> previewPort.touchUp(x, y, contact)
+                }
+            },
+            content = previewContent,
+        )
+    }
 }
 
 @Composable
@@ -639,8 +694,13 @@ private fun AgentQuestionDialog(
 @Composable
 private fun AssistantTabContent(
     db: BrainDb,
-    previewPort: PreviewPort,
     resolution: com.aliothmoon.maafw.runner.ResolutionPreference,
+    previewContent: @Composable () -> Unit,
+    previewFullscreen: Boolean,
+    previewActive: Boolean,
+    watchdogState: WatchdogState,
+    previewSurfaceReady: Boolean,
+    onEnterFullscreen: () -> Unit,
     goal: String,
     onGoalChange: (String) -> Unit,
     status: String,
@@ -659,15 +719,16 @@ private fun AssistantTabContent(
             .verticalScroll(rememberScrollState())
             .padding(12.dp)
     ) {
-        Card(Modifier.fillMaxWidth().aspectRatio(16f / 9f)) {
-            MaaPreviewSurface(
-                resolution = resolution.resolution,
-                onSurfaceCreated = {},
-                onSurfaceAvailable = { surface -> previewPort.attachSurface(surface) },
-                onSurfaceDestroyed = { previewPort.detachSurface() },
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
+        LivePreview(
+            resolution = resolution.resolution,
+            surfaceReady = previewSurfaceReady,
+            running = previewActive,
+            watchdogState = watchdogState,
+            content = previewContent.takeUnless { previewFullscreen },
+            onEnterFullscreen = onEnterFullscreen,
+            showStatus = true,
+            modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f),
+        )
         latestShot?.let { path ->
             val bitmap = remember(path) { BitmapFactory.decodeFile(path) }
             bitmap?.let {

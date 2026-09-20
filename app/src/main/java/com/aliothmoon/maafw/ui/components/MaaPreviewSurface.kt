@@ -63,12 +63,28 @@ fun MaaPreviewSurface(
                     SurfaceView(context).apply {
                         holder.setFormat(PixelFormat.RGBA_8888)
                         holder.addCallback(object : SurfaceHolder.Callback {
+                            private var destroyed = false
+
                             override fun surfaceCreated(holder: SurfaceHolder) {
+                                destroyed = false
                                 currentCreated()
                                 scope.launch {
                                     delay(FIXED_SIZE_DELAY_MS)
                                     val res = currentResolution
-                                    holder.setFixedSize(res.width, res.height)
+                                    runCatching { holder.setFixedSize(res.width, res.height) }
+                                    // Some devices do not emit a second surfaceChanged
+                                    // after setFixedSize when the view is re-attached
+                                    // (e.g. returning from another tab). Without this
+                                    // fallback the privileged preview target stays
+                                    // detached and the cell renders black even while
+                                    // the virtual display is running.
+                                    delay(FIXED_SIZE_DELAY_MS)
+                                    if (!destroyed) {
+                                        val surface = holder.surface
+                                        if (surface != null && surface.isValid) {
+                                            currentAvailable(surface)
+                                        }
+                                    }
                                 }
                             }
 
@@ -78,6 +94,7 @@ fun MaaPreviewSurface(
                                 width: Int,
                                 height: Int,
                             ) {
+                                if (destroyed) return
                                 val res = currentResolution
                                 if (width == res.width && height == res.height) {
                                     currentAvailable(holder.surface)
@@ -85,6 +102,7 @@ fun MaaPreviewSurface(
                             }
 
                             override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                destroyed = true
                                 currentDestroyed()
                             }
                         })

@@ -99,6 +99,11 @@ place. The previous `maa-phone-v1-debug.apk` hash is obsolete.
 - **Android token accounting**: `DeepSeekClient` accumulates provider
   `usage.total_tokens` (or prompt+completion fallback); `AgentRunner` drains it
   into `runs.ai_cost` at finish, and the Runs tab shows `cost=<n>tok`.
+- **Assistant preview reuses MaaFwApp modules**: `rememberMovablePreview`,
+  `LivePreview`, `FullscreenPreview`, touch markers and watchdog state now
+  drive the Assistant cell. A missed `surfaceChanged` after `setFixedSize`
+  is retried, click-to-expand survives Activity recreation, and the idle
+  label uses the watchdog/display state instead of runner phase alone.
 - **Import-pipeline button fix**: the Run tab action row is now a `FlowRow`
   with `maxLines=1`; "Import pipeline" no longer squeezes to one character per
   row (device UI dump confirms its own row).

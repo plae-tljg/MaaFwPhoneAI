@@ -443,6 +443,35 @@ Not claimed: mission execution after the app process is killed (the in-app
 schedule only resumes when the Assistant opens), and exact-alarm background
 mission scheduling. Android unit tests remain `466 tests, 0 failed, 2 skipped`.
 
+## 2l. Assistant preview reuses MaaFwApp modules (2026-09-20 17:50 HKT)
+
+The Assistant Run tab originally used `MaaPreviewSurface` directly, not the
+`TasksPreviewSection` lifecycle. Two symptoms followed:
+
+- after the SurfaceView was recreated (returning to Run tab / after a run),
+  `surfaceDestroyed` detached the native preview target but no matching
+  `surfaceAvailable` re-attached it, so the live cell stayed black while the
+  file-backed latest screenshot was still correct;
+- the status mask was driven by `RunnerPort.phase` alone. MaaFwApp keeps the
+  virtual display/AppWatchdog alive after a run, so a visible frame could sit
+  under a contradictory "Not running" label.
+
+The Assistant now reuses `rememberMovablePreview` + `LivePreview` +
+`FullscreenPreview` + `MaaTouchOverlay`:
+- the movable preview dedups/reports Surface recreation;
+- `MaaPreviewSurface` retries `onSurfaceAvailable` after `setFixedSize` when
+  a device skips the second `surfaceChanged`;
+- status uses `runnerBusy || watchdogState == WATCHING`, with the real
+  watchdog badge;
+- a transparent click layer makes inline click-to-expand reliable, and
+  `rememberSaveable` + `configChanges` keep fullscreen state through the
+  landscape request;
+- fullscreen preview now supports manual touch injection.
+
+Device-checked: tapping the Assistant preview opens the fullscreen host
+(`退出全屏` close button in the UI dump). The previous release APK v1.1.0
+predates this fix; source `main` carries it.
+
 ## 3. What is not working / not built
 
 | Gap | Evidence / detail | Next action |

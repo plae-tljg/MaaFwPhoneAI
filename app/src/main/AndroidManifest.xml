@@ -85,6 +85,7 @@
              no second launcher icon. -->
         <activity
             android:name=".brain.AssistantActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout"
             android:exported="false"
             android:launchMode="singleTop"
             android:theme="@style/Theme.MaaFwApp"
