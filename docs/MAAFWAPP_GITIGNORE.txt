@@ -1,0 +1,55 @@
+.DS_Store
+/captures
+.externalNativeBuild
+local.properties
+*.jks
+*.b64
+AGENTS.md
+/.vscode/
+
+# Generated files
+bin/
+gen/
+out/
+
+# Gradle files
+.gradle/
+**/build/
+
+# Gradle/Android Studio
+versionname.txt
+versioncode.txt
+**/.cxx/
+
+# Log Files
+*.log
+
+# IntelliJ
+*.iml
+.idea/
+
+
+# App Build
+/app/release
+/app/debug
+/gradle/gradle-daemon-jvm.properties
+
+# 上游 PI 项目的本地参考副本，仅供人工比对，不是构建输入
+/sample/
+
+# MaaFramework 的 Android 产物：与 PI 同理不进仓库，由 scripts/setup_maa_framework.py 拉取
+/app/src/main/jniLibs/
+/.maa-cache/
+/.maafwversion
+
+# build_agent_bundle.py 的工作目录：下载的 agent 内核、解包结果与 pip 缓存
+/.maafw/
+# 出内核用的下载缓存；内核脚本不在本仓库，这条只为本机残留的目录留着
+.agent-runtime-cache/
+
+# Kotlin 2.x 的构建缓存目录
+.kotlin/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
